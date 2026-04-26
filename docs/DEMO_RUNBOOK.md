@@ -1,25 +1,473 @@
 # Demo Runbook — Lightning Bounty Marketplace
 
-Two demo paths exist. **For Spiral pitch, use V2.** The V1 script below stays as a
-fallback if the auditor or the GitHub integration stalls.
+Three demo paths exist. **For AI Nation Hackathon pitch, use V3.** V2 and V1 are preserved below as fallback paths.
 
 | Path | Length | What it shows | Use when |
 |---|---|---|---|
-| **V2 — Full GitHub flow** | 5 min | Real GitHub issue → autonomous auditor → auto-PR | Default for the Spiral pitch. Most differentiated story. |
-| **V1 — 3-tier marketplace** | 6 min | Snippet, codebase, bug bounty tiers with manual Accept | Fallback if V2 stalls; preserved as the "breadth" demo. |
+| **V3 — Scan + bid + settle + revert** | 5 min | `lb scan` finds candidates, agents bid live, auditor decides, Lightning settles, PR opens, revert demo | Default for AI Nation Hackathon pitch. |
+| **V2 — Full GitHub flow** | 5 min | Real GitHub issue posted via CLI, autonomous auditor, auto-PR | Fallback if scan stalls. |
+| **V1 — 3-tier marketplace** | 6 min | Snippet, codebase, bug bounty tiers with manual Accept | Last-resort fallback. |
 
-The V2 path uses the real public repo
-[github.com/boaharis/lightning-bounty-demo](https://github.com/boaharis/lightning-bounty-demo)
-and its issue #1: **"Add dark mode toggle to settings page"** (already created and
-labelled `bounty`). The `gh` CLI is already authenticated as `boaharis` on the
-demo machine.
+All three paths target the real public repo
+[github.com/boaharis/lightning-bounty-demo](https://github.com/boaharis/lightning-bounty-demo).
+The `gh` CLI is authenticated as `boaharis` on the demo machine.
 
 ---
 
-# V2 Pitch Flow (5 minutes)
+# V3 Pitch Flow (5 minutes)
 
-This is the default Spiral pitch. Every second is scripted. If you have not run
-the demo end-to-end at least twice today, do that before continuing.
+This is the AI Nation Hackathon pitch. Run this end-to-end at least twice before going live.
+
+## Pre-flight checklist (run 3 minutes before going live)
+
+Do all of these in order. Do not skip any step.
+
+### 1. Wipe DB and restart clean
+
+```bash
+cd /Users/harismuranovic/Desktop/saas/bounty-map/lightning-bounties
+rm -f dev.db && touch dev.db
+npm run dev
+```
+
+Wait for `Ready in Xs` on `http://localhost:3000`.
+
+### 2. Start all four agents
+
+Terminal 2:
+
+```bash
+cd /Users/harismuranovic/Desktop/saas/bounty-map/lightning-bounties/agents
+bash run_all.sh
+```
+
+Confirm four log streams: `[fast]`, `[balanced]`, `[quality]`, `[ensemble]`. Each should print `polling marketplace...` within 10 seconds.
+
+### 3. Verify cloudflared tunnel (or Railway URL)
+
+If running cloudflared locally:
+
+```bash
+cloudflared tunnel run lb-demo
+```
+
+Confirm the tunnel URL is reachable from your phone. If using Railway, paste the Railway URL into the browser and confirm it responds.
+
+### 4. Verify GitHub auth and demo repo state
+
+Terminal 3 (the `lb` CLI terminal):
+
+```bash
+gh auth status                                          # must show: Logged in to github.com as boaharis
+lb gh-login                                             # should print: auth ok
+lb gh-connect boaharis/lightning-bounty-demo            # idempotent — re-confirms the connection
+```
+
+Confirm the demo repo has at least one open issue (so `lb scan` finds something):
+
+```bash
+gh issue list --repo boaharis/lightning-bounty-demo --state open
+```
+
+If zero open issues: create one now:
+
+```bash
+gh issue create --repo boaharis/lightning-bounty-demo \
+  --title "Add localStorage persistence for todos" \
+  --body "Todos should survive a page refresh. Store them in localStorage and rehydrate on load."
+```
+
+### 5. Seed a settled+merged bounty for the revert demo
+
+The revert demo at [3:30] requires one bounty in SETTLED or MERGED status. Check:
+
+```bash
+curl -s http://localhost:3000/api/bounties | node -e "
+  const d=require('fs').readFileSync('/dev/stdin','utf8');
+  const b=JSON.parse(d);
+  console.log(b.filter(x=>['SETTLED','MERGED'].includes(x.status)).map(x=>x.id+' '+x.status));
+"
+```
+
+If none exist, post one with a short deadline and wait for it to settle:
+
+```bash
+lb gh-bounty boaharis/lightning-bounty-demo#1 --max-sats 5000 --deadline-minutes 1
+```
+
+Wait ~75 seconds for the full cycle (bid + auditor + settle). Then confirm again with the curl above.
+
+### 6. Build the CLI
+
+```bash
+cd /Users/harismuranovic/Desktop/saas/bounty-map/lightning-bounties/cli
+npm run build
+npm link
+```
+
+Verify: `lb --version` prints the version.
+
+### 7. Environment checks
+
+```bash
+grep USE_STUBS .env              # must be: USE_STUBS=true
+grep DEMO_MODE .env              # must be: DEMO_MODE=true  (enables force-deadline endpoint)
+grep ANTHROPIC_API_KEY .env      # must not be empty
+```
+
+### 8. Browser tab order (left to right, set up before you start)
+
+1. `http://localhost:3000` — landing page
+2. `http://localhost:3000/repos/boaharis/lightning-bounty-demo` — repo detail
+3. `https://github.com/boaharis/lightning-bounty-demo` — GitHub repo
+4. (Will open during demo) — the bounty detail page
+5. (Will open during demo) — the GitHub PR page
+
+### 9. Final checks
+
+- Volume off. Notifications off.
+- Browser zoom 110%.
+- Terminal font size 16+.
+- Terminal 3 has `lb scan boaharis/lightning-bounty-demo` ready in shell history (press up-arrow once).
+
+---
+
+## The 5 minutes
+
+### 0:00 - 0:30 — Setup statement (no UI activity)
+
+**On screen:** Landing page at `http://localhost:3000`.
+
+**You say:**
+
+> AI agents are everywhere. But who pays them? Who decides what's good?
+> This marketplace is the answer. Real GitHub issues become bounties.
+> Autonomous agents bid with code. An auditor picks the winner. Lightning
+> settles. PR opens on your repo. You merge. Or revert.
+
+**You do:** Stay on the landing page. Let the audience read it.
+
+---
+
+### 0:30 - 1:30 — Issue to bounty via scan
+
+**On screen:** Switch to terminal 3.
+
+**You say:**
+
+> One command. It reads your repo and tells you what's worth posting.
+
+**You do:**
+
+```bash
+lb scan boaharis/lightning-bounty-demo
+```
+
+Expected output (5-8 lines, one per candidate):
+
+```
+scanning boaharis/lightning-bounty-demo...
+  #3  Add localStorage persistence for todos       [medium]  suggested: 40000 sats
+  #4  Fix date formatting in task list             [low]     suggested: 15000 sats
+  #5  Add keyboard shortcut for new task           [low]     suggested: 12000 sats
+  #6  Write unit tests for TaskStore               [medium]  suggested: 35000 sats
+  ...
+found 5 candidates. run `lb scan --apply 1,3` to post selected bounties.
+```
+
+**You say while it runs:**
+
+> The scanner reads every open issue and asks Claude to rank them by bounty
+> potential — complexity, clarity of spec, testability. It suggests a sat
+> amount based on estimated effort. I pick two.
+
+**You do:**
+
+```bash
+lb scan --apply 1,3
+```
+
+Expected output:
+
+```
+posting bounty for issue #3: Add localStorage persistence for todos (40000 sats)
+  bounty posted: abc123...
+posting bounty for issue #5: Add keyboard shortcut for new task (12000 sats)
+  bounty posted: def456...
+done. 2 bounties live.
+```
+
+**You say:**
+
+> Two issues. Two bounties. Agents will start bidding within seconds.
+
+**You do:** Switch to browser tab 2 — `http://localhost:3000/repos/boaharis/lightning-bounty-demo`.
+
+**You say:**
+
+> Here they are in the UI. Live.
+
+Point at the two new bounties that just appeared.
+
+---
+
+### 1:30 - 2:30 — Live bidding
+
+**On screen:** Click on the first bounty (localStorage persistence). Browser opens `/bounty/<id>`.
+
+**You say:**
+
+> Four agents are going to compete for this. They each see the issue body,
+> the repo context, and the auditor config I locked at posting time. They
+> cannot see each other's bids. No price-matching. No copying.
+
+**Beat-by-beat:**
+
+| t | screen | action |
+|---|--------|--------|
+| 1:35 | bounty page | First bid lands — `[fast]`, status PENDING then PASS. |
+| 1:45 | bounty page | `[balanced]` and `[quality]` bids land. |
+| 1:55 | bounty page | `[ensemble]` lands. Click its row — expand `ensemble_metadata`: ran 3 models, picked the one with smallest diff. |
+| 2:05 | bounty page | All 4 bids visible. Some PASS, possibly one FAIL. Point at the FAIL: "That bidder's stake just burned." |
+| 2:15 | bounty page | Point at "Awaiting auditor" — no Accept button. "The buyer can't cherry-pick code they haven't paid for." |
+| 2:20 | terminal 3 | Force the deadline: `curl -X POST http://localhost:3000/api/bounty/<bounty-id>/force-deadline` |
+| 2:25 | bounty page | Status flips to AUDITING. Spinner: "auditor reading N PASS bids..." |
+
+**You say while bids land:**
+
+> No Accept button. The buyer locked an auditor config when they posted:
+> scoring weights, threshold, model. That config is hashed into the bounty.
+> Cannot be changed. The auditor is the only one who can pick a winner.
+> Anti-cherry-pick by design.
+
+---
+
+### 2:30 - 3:30 — Settlement and merge
+
+**On screen:** Bounty page auto-updates.
+
+**Beat-by-beat:**
+
+| t | screen | action |
+|---|--------|--------|
+| 2:35 | bounty page | Status flips to SETTLED. Audit trail expands. |
+| 2:40 | bounty page | Each bid shows per-criterion scores (7 bars) + reasoning paragraph. Winner highlighted. |
+| 2:50 | bounty page | Lightning settle banner: "N sats paid to winner, M sats refunded to poster." |
+| 2:55 | bounty page | Click "View Winner Code" — diff viewer modal opens. Scroll briefly. |
+| 3:00 | bounty page | Click "View PR" link. |
+| 3:05 | github tab | PR titled `marketplace bounty: Add localStorage persistence for todos`. |
+| 3:10 | github tab | PR body: auditor reasoning + bounty link + test output. |
+| 3:20 | github tab | Click Files changed — show the diff. `lib/persistence.ts` was created, `app/page.tsx` modified. |
+| 3:25 | bounty page | Click [Merge] button (or terminal: `lb gh-merge <bounty-id>`). |
+| 3:30 | wallets page | Navigate to `/wallets` — winner's balance increased by the bounty amount. |
+
+**You say:**
+
+> The PR opened automatically the moment Lightning settled. The buyer
+> reviews it exactly the way they'd review a PR from a teammate. Then
+> they click Merge. Winner gets paid. The code is in the repo.
+>
+> No platform holding funds. No Stripe. No KYC. Lightning settled it in
+> seconds.
+
+---
+
+### 3:30 - 4:00 — Revert demo (the safety net)
+
+**On screen:** Navigate to an older, already-settled bounty in the list.
+
+**You say:**
+
+> What if the code looked fine in review and turned out to be wrong?
+> There's an escape hatch.
+
+**You do:**
+
+Click the [Revert] button on the settled bounty. A confirmation modal appears. Confirm.
+
+**Expected:**
+
+- A revert PR opens on GitHub automatically.
+- Bounty status changes to REVERTED with a link to the revert PR.
+
+**You do:** Click the revert PR link. Show it on GitHub — it's a real PR that undoes the diff.
+
+**You say:**
+
+> No refund — the bidder did the work. But the change is reversed. This
+> is the warranty period mechanism. Future versions will add a formal
+> warranty window where the bidder is on the hook if the revert happens
+> within 48 hours.
+
+---
+
+### 4:00 - 5:00 — Vision close
+
+**On screen:** Switch terminal. Run scan again to show the cycle repeating.
+
+```bash
+lb scan boaharis/lightning-bounty-demo
+```
+
+**You say while it runs:**
+
+> New opportunities. Still waiting.
+
+**Closing statement:**
+
+> Every TODO in your codebase is a bounty waiting to be filled overnight.
+> Every open issue is a market. Every model that ships diffs can earn.
+>
+> No KYC, no bank, no Stripe. Lightning makes it work. Settled in seconds.
+> Quality reviewed by AI. Reversible if wrong.
+>
+> We built this for AI Nation Hackathon.
+> github.com/boaharis/ai-nation-hackathon-bounty-marketplace
+>
+> Marketplace as infrastructure. Thanks.
+
+---
+
+## Pre-flight summary (3 min before going live)
+
+| Check | Command | Expected |
+|---|---|---|
+| Dev server up | `curl -s http://localhost:3000/api/health` | `{"ok":true}` or 200 |
+| 4 agents running | `ps aux \| grep python` | 4 agent processes |
+| Tunnel up | open tunnel URL in browser | landing page renders |
+| DB has settled bounty | `curl /api/bounties \| jq '[.[] \| select(.status=="SETTLED")]'` | at least 1 result |
+| GH CLI auth | `gh auth status` | Logged in as boaharis |
+| Open issue on demo repo | `gh issue list --repo boaharis/lightning-bounty-demo --state open` | at least 1 issue |
+| DEMO_MODE on | `grep DEMO_MODE .env` | `DEMO_MODE=true` |
+| USE_STUBS on | `grep USE_STUBS .env` | `USE_STUBS=true` |
+| CLI built | `lb --version` | prints version |
+
+---
+
+## Backup plans
+
+### If `lb scan` produces 0 candidates
+
+The scanner found no open issues (or none passed the quality bar). Fallback:
+
+```bash
+# Create a fresh issue manually and post directly
+gh issue create --repo boaharis/lightning-bounty-demo \
+  --title "Add localStorage persistence for todos" \
+  --body "Todos should survive page refresh."
+
+lb gh-bounty boaharis/lightning-bounty-demo#<N> --max-sats 40000
+```
+
+Frame it: "I'll use a specific issue I prepared for this demo."
+
+### If auditor stalls after force-deadline
+
+1. Check terminal 1 for API errors (429 / 529 = rate limit).
+2. Trigger the fallback decision endpoint:
+   ```bash
+   curl -X POST http://localhost:3000/api/bounty/<bounty-id>/force-fallback
+   ```
+   This skips the LLM call and picks the lowest-priced PASS bid. Frame it: "if the
+   auditor times out, the policy falls back to lowest-price passing bid. Same result,
+   different selection path."
+3. If still stalled: drop to V2 script (below).
+
+### If autoPR fails after settlement
+
+```bash
+lb gh-pr <bounty-id>
+```
+
+Most common cause: gh token rotated. Fix: `gh auth refresh -s repo` then retry.
+
+If still failing: click the audit trail diff viewer in the UI. Say: "the PR step is
+automatic in production; the diff is already in the UI."
+
+### If all bids fail the test suite
+
+The auditor will transition the bounty to `REOPEN_BIDDING` and extend the deadline.
+Frame it: "agents failed the quality bar. The market reopens. This is the escrow
+mechanism — the poster's funds stay locked until a passing bid arrives."
+
+### If everything fails
+
+Open the backup screen recording at `docs/demo-recording.mp4` (operator: record this
+the day before the pitch). Say: "let me show you a recorded run while we restart."
+
+---
+
+## Post-pitch demo URLs to send to judges
+
+After the pitch, send judges these three links:
+
+1. **Live app** — cloudflared tunnel URL (or Railway URL if deployed)
+2. **GitHub demo repo** — `https://github.com/boaharis/lightning-bounty-demo`
+3. **Marketplace repo** — `https://github.com/boaharis/ai-nation-hackathon-bounty-marketplace`
+
+---
+
+## Failure-mode Q&A (for judges)
+
+**"What happens if all bids fail the test suite?"**
+
+The auditor transitions the bounty to `REOPEN_BIDDING`. The deadline extends by the
+configured extension window (default: same as original deadline). Existing bidders can
+revise their submissions; new bidders can enter. The poster's funds stay locked — no
+refund until a valid winner is picked or the poster manually cancels.
+
+**"Can the poster manipulate the winner choice?"**
+
+No. The auditor config (weights, threshold, model) is hashed into the bounty at
+posting time and stored immutably. No PATCH endpoint touches `auditor_config` after
+posting. The auditor is called server-side with the locked config — no UI path exists
+to tweak it mid-auction. Winner-takes-all removes any incentive to underpay.
+
+**"What if the winner produces broken code? Can they be punished?"**
+
+The poster can click Revert — a revert PR is opened automatically. The bounty
+transitions to REVERTED. The winner has already been paid (no automatic refund). A
+warranty period feature (time-locked clawback if revert happens within N hours) is
+on the roadmap but not implemented in this prototype.
+
+**"What stops the poster from just reading every bid diff for free?"**
+
+Bid code is hash-committed at submission time. The full diff is server-side only.
+The API `/api/bounty/:id/winning-diff` requires the poster's pubkey and only returns
+the winning diff after the bounty is SETTLED. Non-winning diffs are never revealed.
+
+**"Could a bidder collude with the auditor?"**
+
+The auditor is a deterministic LLM call with a locked config (model, weights, prompt
+template). There is no human auditor to bribe. The only manipulation surface is
+injecting malicious content into the diff that biases the auditor's scoring prompt —
+future mitigation: sanitize diff content before including in auditor prompt.
+
+---
+
+## Reset between rehearsals
+
+```bash
+# Stop agents (Ctrl+C in terminal 2)
+# Stop dev server (Ctrl+C in terminal 1)
+cd /Users/harismuranovic/Desktop/saas/bounty-map/lightning-bounties
+rm -f dev.db && touch dev.db
+# Revert the demo repo working tree if a previous run applied a diff
+cd /path/to/cloned/lightning-bounty-demo
+git checkout -- .
+git clean -fd
+# Restart
+cd /Users/harismuranovic/Desktop/saas/bounty-map/lightning-bounties
+npm run dev &
+cd agents && bash run_all.sh
+```
+
+---
+
+# V2 Pitch Flow (5 minutes) — Fallback
+
+This is the previous default (Spiral pitch). Use as fallback if V3's scan
+command stalls.
 
 ## V2 pre-pitch checklist (run 3 minutes before)
 
@@ -103,7 +551,7 @@ Restart `npm run dev` (terminal 1) and `run_all.sh` (terminal 2).
 
 ---
 
-## The 5 minutes
+## The V2 5 minutes
 
 ### 0:00 - 0:30 — Show the real GitHub issue
 
@@ -319,10 +767,9 @@ You forgot to enable demo mode. Set `DEMO_MODE=true` in `.env` and restart
 
 ---
 
-# V1 Pitch Flow — 3-Tier Marketplace (Fallback)
+# V1 Pitch Flow — 3-Tier Marketplace (Last-Resort Fallback)
 
-The original V1 6-minute pitch. Use as a backup if V2 stalls. Same pre-flight
-applies, plus the V1-specific steps below.
+The original V1 6-minute pitch. Use as a last resort if both V3 and V2 stall.
 
 ## The 3 tiers (memorize this)
 
@@ -427,11 +874,7 @@ Open these in this order so they are arranged left-to-right in your tab bar:
 
 ---
 
-## The 6 minutes
-
-Each segment is structured as: what is on screen / what you say / what you do. Stick to the script. If anything stalls, see the fallback section at the end.
-
----
+## The V1 6 minutes
 
 ### 0:00 - 0:30 — Setup statement (no UI activity)
 
@@ -564,7 +1007,7 @@ Each segment is structured as: what is on screen / what you say / what you do. S
 
 ---
 
-## Fallback plan
+## V1 Fallback plan
 
 If something stalls during the live demo, here is what to do.
 

@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS bounties (
   auditor_config TEXT,                         -- JSON, locked at posting time
   auditor_result TEXT,                         -- JSON, written after auditor decision
   extension_count INTEGER NOT NULL DEFAULT 0,  -- 0..max_extensions for re-open rounds
-  merged_at TIMESTAMP                          -- V2.5: when the auto-PR was merged
+  merged_at TIMESTAMP,                         -- V2.5: when the auto-PR was merged
+  reverted_at TIMESTAMP,                       -- V3: when revert PR was opened
+  revert_pr_url TEXT                           -- V3: URL of the revert PR
 );
 
 -- V2: GitHub repos connected to this marketplace
@@ -104,6 +106,27 @@ CREATE TABLE IF NOT EXISTS bids (
   payment_hash TEXT,
   submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- V3: Scan candidates — AI-drafted improvement issues from codebase scans
+CREATE TABLE IF NOT EXISTS scan_candidates (
+  id TEXT PRIMARY KEY,
+  scan_id TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  files_affected TEXT,
+  estimated_loc INTEGER,
+  suggested_sats INTEGER,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  bounty_id TEXT,
+  issue_number INTEGER,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  applied_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_candidates_scan_id ON scan_candidates(scan_id);
+CREATE INDEX IF NOT EXISTS idx_scan_candidates_repo ON scan_candidates(repo, created_at DESC);
 
 -- Public Settlement Statistics view
 CREATE VIEW IF NOT EXISTS public_stats AS

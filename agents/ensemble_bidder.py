@@ -4,7 +4,7 @@
 Strategy:
 - Bids on codebase + bug_bounty tasks ONLY (snippets are too small for ensemble overhead).
 - Bids on ALL such tasks regardless of max_bounty_sats.
-- Bid price: 90% of max_bounty (premium tier between Balanced 87% and Quality 95%).
+- V3 winner-takes-all: always submits with asked_price = max_bounty_sats (full prize).
 - bid_type: always 'diff' (codebase/bug_bounty produce unified diffs).
 - For each eligible bounty: calls sonnet@temp=0.0, sonnet@temp=0.5, sonnet@temp=1.0 in parallel via asyncio.gather.
 - Shape-checks each candidate (valid unified diff headers?).
@@ -33,7 +33,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 AGENT_NAME = "EnsembleBidder"
-BID_PERCENTAGE = 0.90
 POLL_INTERVAL = 10  # seconds
 
 # Ensemble calls — same model, 3 temperature variants for diversity.
@@ -46,10 +45,6 @@ ENSEMBLE_CALLS = [
 
 # Task types this agent bids on.
 ELIGIBLE_TASK_TYPES = {"codebase", "bug_bounty"}
-
-
-def _compute_price(max_bounty: int) -> int:
-    return max(1, int(max_bounty * BID_PERCENTAGE))
 
 
 def _passes_shape_check(diff: str) -> bool:
@@ -192,7 +187,7 @@ async def run_ensemble(
 
 async def main() -> None:
     logger.info(
-        "Starting EnsembleBidder (strategy: 90%% of max, all codebase+bug_bounty tasks, 3-model ensemble)"
+        "Starting EnsembleBidder (strategy: winner-takes-all full bounty, all codebase+bug_bounty tasks, 3-model ensemble)"
     )
 
     lightning = LightningClient(AGENT_NAME)
@@ -240,10 +235,11 @@ async def main() -> None:
                     )
 
                     chosen_diff, ensemble_metadata = await run_ensemble(full)
-                    price = _compute_price(full.get("max_bounty_sats", 0))
+                    # V3 winner-takes-all: always bid the full bounty amount
+                    price = full.get("max_bounty_sats", 0)
 
                     logger.info(
-                        "Submitting ensemble bid on '%s' for %d sat",
+                        "Submitting ensemble bid on '%s' for %d sat full bounty",
                         full.get("title", ""),
                         price,
                     )

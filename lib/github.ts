@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { normalizeNewFileDiffs } from "./sandbox";
 
 const execFileAsync = promisify(execFile);
 const GH_TIMEOUT_MS = 60_000;
@@ -85,8 +86,11 @@ export async function cloneRepo(
  */
 export function applyDiff(dir: string, diff: string): void {
   const patchPath = join(dir, ".lb-patch.diff");
+  // Normalize new-file diff headers before applying (LLMs often produce
+  // `--- a/<path>` for new files instead of `--- /dev/null`).
+  const withFixedHeaders = normalizeNewFileDiffs(diff, dir);
   // LLM diffs often miss the trailing newline that POSIX patch tools require.
-  const normalized = diff.endsWith("\n") ? diff : diff + "\n";
+  const normalized = withFixedHeaders.endsWith("\n") ? withFixedHeaders : withFixedHeaders + "\n";
   writeFileSync(patchPath, normalized, "utf-8");
 
   // Try patch CLI first (more lenient with LLM hunk-count drift), then git apply variants.
@@ -236,6 +240,157 @@ export interface AutoPRResult {
   prUrl: string;
   prNumber: number;
   branch: string;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-revert flow (called by /api/bounty/[id]/revert route after SETTLED+MERGED)
+// ---------------------------------------------------------------------------
+
+export interface AutoRevertInput {
+  repo: string;           // "owner/repo"
+  mergedPrUrl: string;    // URL of the original merged PR
+  bountyId: string;
+  originalIssueNumber: number | null;
+  bountyUrl: string;
+}
+
+export interface AutoRevertResult {
+  prUrl: string;
+  prNumber: number;
+  branch: string;
+}
+
+/**
+ * [lib/github][autoRevert] Reverts a merged PR by:
+ *  1. Fetching the merge commit SHA via gh pr view
+ *  2. Cloning repo at HEAD
+ *  3. Running git revert <merge-commit-sha>
+ *  4. Pushing a new branch and opening a revert PR
+ */
+export async function autoRevert(input: AutoRevertInput): Promise<AutoRevertResult> {
+  const branch = `revert-bnty-${input.bountyId.slice(0, 12)}`;
+  const tmpDir = mkdtempSync(join(tmpdir(), "lb-revert-"));
+  const repoDir = join(tmpDir, "repo");
+
+  try {
+    // 1. Get merge commit SHA from the original PR
+    const viewRaw = await gh([
+      "pr",
+      "view",
+      input.mergedPrUrl,
+      "--json",
+      "mergeCommit,number",
+    ]);
+
+    let mergeCommitSha: string | null = null;
+    let originalPrNumber: number | null = null;
+    try {
+      const parsed = JSON.parse(viewRaw) as {
+        mergeCommit?: { oid?: string };
+        number?: number;
+      };
+      mergeCommitSha = parsed.mergeCommit?.oid ?? null;
+      originalPrNumber = parsed.number ?? null;
+    } catch {
+      throw new Error(`[lib/github][autoRevert] Failed to parse gh pr view output: ${viewRaw}`);
+    }
+
+    if (!mergeCommitSha) {
+      throw new Error(
+        `[lib/github][autoRevert] Could not find merge commit SHA for PR: ${input.mergedPrUrl}`,
+      );
+    }
+
+    // 2. Clone repo at HEAD (depth=50 to include the merge commit)
+    await gh(["repo", "clone", input.repo, repoDir, "--", "--depth=50", "--quiet"]);
+
+    // 3. Set git identity for the revert commit
+    execFileSync("git", ["config", "user.email", "lb-bot@lightning-bounties.dev"], {
+      cwd: repoDir,
+      stdio: "pipe",
+    });
+    execFileSync("git", ["config", "user.name", "Lightning Bounties Bot"], {
+      cwd: repoDir,
+      stdio: "pipe",
+    });
+
+    // 4. Create revert branch
+    execFileSync("git", ["checkout", "-b", branch], { cwd: repoDir, stdio: "pipe" });
+
+    // 5. Revert — try -m 1 (merge commit) then plain (squash/regular commit)
+    let revertOk = false;
+    try {
+      execFileSync(
+        "git",
+        ["revert", "--no-edit", "-m", "1", mergeCommitSha],
+        { cwd: repoDir, stdio: "pipe" },
+      );
+      revertOk = true;
+    } catch {
+      // squash merge → not a merge commit
+    }
+    if (!revertOk) {
+      execFileSync(
+        "git",
+        ["revert", "--no-edit", mergeCommitSha],
+        { cwd: repoDir, stdio: "pipe" },
+      );
+    }
+
+    // 6. Push branch
+    execFileSync("git", ["push", "--force", "origin", branch], { cwd: repoDir, stdio: "pipe" });
+
+    // 7. Open revert PR
+    const prBody = [
+      `## Revert: Lightning Bounty ${input.bountyId}`,
+      ``,
+      `This reverts the changes introduced by the winning bid in bounty \`${input.bountyId}\`.`,
+      ``,
+      `**Original PR:** ${input.mergedPrUrl}`,
+      input.originalIssueNumber ? `**Original Issue:** #${input.originalIssueNumber}` : "",
+      `**Bounty:** ${input.bountyUrl}`,
+      ``,
+      `> Note: Winner keeps the sats. This revert does not affect the Lightning settlement.`,
+      ``,
+      `---`,
+      `*Opened automatically by Lightning Bounty Marketplace*`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const pr = await openPR({
+      repo: input.repo,
+      branch,
+      base: "main",
+      title: `Revert: marketplace bounty ${input.bountyId.slice(0, 12)}`,
+      body: prBody,
+    });
+
+    // Comment on the original PR (non-fatal)
+    if (originalPrNumber) {
+      try {
+        await gh([
+          "pr",
+          "comment",
+          String(originalPrNumber),
+          "--repo",
+          input.repo,
+          "--body",
+          `A revert PR has been opened: ${pr.url}`,
+        ]);
+      } catch {
+        console.warn(`[lib/github][autoRevert] Could not comment on original PR #${originalPrNumber}`);
+      }
+    }
+
+    return { prUrl: pr.url, prNumber: pr.number, branch };
+  } finally {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // non-fatal
+    }
+  }
 }
 
 /**

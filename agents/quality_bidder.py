@@ -1,5 +1,7 @@
 """
-[quality_bidder] QualityBidder — bids 95% of max_bounty on bounties over 3000 sat.
+[quality_bidder] QualityBidder — bids on bounties over 3000 sat.
+V3 winner-takes-all: always submits with asked_price = max_bounty_sats (full prize).
+Strategy is purely "should I bid on this task?" — no percentage logic.
 Uses claude-sonnet-4-6 at temperature 0.0 (deterministic, reliable) (falls back to reference solutions if no ANTHROPIC_API_KEY).
 
 Handles all 3 task types:
@@ -28,16 +30,11 @@ logger = logging.getLogger(__name__)
 
 AGENT_NAME = "QualityBidder"
 MIN_BOUNTY_THRESHOLD = 3_000  # only bid if max_bounty > this
-BID_PERCENTAGE = 0.95
 POLL_INTERVAL = 10  # seconds
 
 
 def _should_bid(bounty: dict) -> bool:
     return bounty.get("max_bounty_sats", 0) > MIN_BOUNTY_THRESHOLD
-
-
-def _compute_price(max_bounty: int) -> int:
-    return max(1, int(max_bounty * BID_PERCENTAGE))
 
 
 def _bid_type_for(task_type: str) -> str:
@@ -49,7 +46,7 @@ def _bid_type_for(task_type: str) -> str:
 
 async def main() -> None:
     logger.info(
-        "Starting QualityBidder (strategy: 95%% of max, max > %d sat)", MIN_BOUNTY_THRESHOLD
+        "Starting QualityBidder (strategy: winner-takes-all full bounty, max > %d sat)", MIN_BOUNTY_THRESHOLD
     )
 
     lightning = LightningClient(AGENT_NAME)
@@ -94,11 +91,12 @@ async def main() -> None:
                     )
 
                     solution = await llm.generate_solution(full)
-                    price = _compute_price(full.get("max_bounty_sats", 0))
+                    # V3 winner-takes-all: always bid the full bounty amount
+                    price = full.get("max_bounty_sats", 0)
                     bid_type = _bid_type_for(task_type)
 
                     logger.info(
-                        "Submitting bid on '%s' (id=%s) for %d sat (bid_type=%s)",
+                        "Submitting bid on '%s' (id=%s) for %d sat full bounty (bid_type=%s)",
                         full.get("title", ""),
                         bounty_id,
                         price,

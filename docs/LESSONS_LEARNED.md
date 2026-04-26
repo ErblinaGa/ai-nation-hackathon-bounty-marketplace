@@ -1,5 +1,141 @@
 # Lessons Learned
 
+## Session: V3 Scan Agent (2026-04-25)
+
+### glob is not in root node_modules — use readdirSync recursion in lib/
+
+`cli/node_modules` has `glob` but `lib/scanner.ts` runs under Next.js which only sees
+root `node_modules`. Replaced `glob` with a recursive `readdirSync` walker. Same
+effect, no extra dependency.
+
+### lib/github.ts `.js` extension import breaks Next.js webpack in dev mode
+
+Team A added `import { normalizeNewFileDiffs } from "./sandbox.js"` — the explicit
+`.js` extension causes webpack to fail to resolve the TypeScript source. Next.js
+`moduleResolution: "bundler"` (tsconfig) DOES support `.js`→`.ts` remapping at
+typecheck time, but the webpack runtime resolver in dev mode does not. Fix: drop
+the `.js` extension (use `"./sandbox"`). This is a Team A blocker; it cascades to
+all API routes because jobs.ts imports github.ts.
+
+### scan_candidates table: manual ALTER needed on existing dev.db
+
+`CREATE TABLE IF NOT EXISTS scan_candidates` will not run on an existing DB that
+doesn't have the table. Run once manually on existing dev.db:
+```
+node -e "require('better-sqlite3')('./dev.db').exec('CREATE TABLE IF NOT EXISTS scan_candidates (id TEXT PRIMARY KEY, scan_id TEXT NOT NULL, repo TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, severity TEXT NOT NULL, files_affected TEXT, estimated_loc INTEGER, suggested_sats INTEGER, status TEXT NOT NULL DEFAULT ''PENDING'', bounty_id TEXT, issue_number INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, applied_at TIMESTAMP);')"
+```
+On fresh server start, `lib/db.ts` handles it automatically.
+
+### CLI --api default includes /api — avoid double-appending
+
+`DEFAULT_API_BASE = "http://localhost:3000/api"` means scan.ts must NOT append
+`/api` again. Pattern: normalize once in the helper with
+`apiBase.endsWith("/api") ? apiBase : apiBase + "/api"` before constructing
+endpoint URLs like `/api/scan`, `/api/scan/apply`.
+
+### claude-sonnet temperature 0 gives deterministic scan results
+
+Using `temperature: 0` in the SCAN_PROMPT call makes the JSON output consistent
+across repeated scans of the same codebase. Candidates are sorted HIGH→MEDIUM→LOW
+using an in-memory severity index for stable presentation order.
+
+### scan_candidates INSERT OR IGNORE prevents duplicate write on retry
+
+If the scanner runs twice for the same scan_id (network retry), `INSERT OR IGNORE`
+prevents primary-key violations. The candidate IDs are deterministic (scan_id + idx),
+so duplicates are exact.
+
+
+
+## Session: V3 Diff Normalization + Demo Runbook (2026-04-25)
+
+### LLM new-file diffs use wrong `---` header
+
+LLMs consistently generate `--- a/<path>` even when the file does not yet exist.
+`git apply` rejects this with "new file depends on old contents". The correct header
+for a new file is `--- /dev/null`. Fix: scan the diff before applying; for each file
+block where (a) the first `@@` hunk starts with `-0,0` and (b) the source path does
+not exist in the working tree, rewrite the `---` line to `--- /dev/null`. Also handle
+the `--- a/dev/null` variant (wrong prefix on `/dev/null`) that some models emit.
+
+### Two conditions are required before rewriting the header
+
+It is not sufficient to check only for `@@ -0,0` — that hunk header alone could
+appear in a diff that regenerates an existing file from scratch. The second condition
+(`!existsSync`) is the decisive guard: if the file already exists in tmpDir, the diff
+is a modification and must NOT be rewritten. Both conditions together prevent false
+rewrites on legitimate modification diffs.
+
+### `normalizeNewFileDiffs` must be called in three places
+
+- `lib/sandbox.ts` `runCodebase()` — before `applyDiff`
+- `lib/sandbox.ts` `runBugBounty()` — before `applyDiff`
+- `lib/github.ts` `applyDiff()` — before writing the patch file
+- `cli/src/commands/gh_pr.ts` `applyDiff()` — before writing the patch file
+
+The CLI cannot import from `lib/` (standalone ESM, no Next.js path aliases), so the
+function is duplicated verbatim in `gh_pr.ts`. Keep both copies in sync if the logic
+ever changes.
+
+### Export `normalizeNewFileDiffs` from sandbox.ts for reuse in github.ts
+
+`lib/github.ts` imports from `"./sandbox.js"` (the `.js` extension is required for
+Next.js ESM resolution even though the source is `.ts`). The function is pure —
+takes a diff string + dir path, returns a diff string — so the import is safe with no
+circular dependency risk.
+
+---
+
+## Session: V3 WinnerCodeViewer + Revert (2026-04-25)
+
+### WinnerCodeViewer: regex tokenizer is enough for diff syntax highlighting
+
+A 4-regex tokenizer (keywords, strings, numbers, comments) with a de-overlapping span sort is plenty for a diff viewer. Spans are sorted by start index; any span that starts before the cursor after the previous span is skipped. Keep token colors as literal hex — Tailwind JIT won't purge colors that aren't in the source tree at build time if you use dynamic class names.
+
+### lib/github.ts autoRevert: squash merges need -m 1 fallback
+
+`git revert -m 1 <sha>` is needed for proper merge commits (2 parents). Squash merges produce a regular single-parent commit so `-m 1` fails. Always try with `-m 1` first, catch the error, then retry without it.
+
+### PATCH /api/bounty/[id] dynamic SET clause pattern
+
+The PATCH handler builds SET clause dynamically (`const setClauses: string[] = []`) — extend it rather than replacing it when adding new patchable fields. The validation check also needs updating to include the new field names in the "at least one required" guard.
+
+### SQLite schema on dev.db: ALTER TABLE not needed for new columns until DB recreated
+
+Because `CREATE TABLE IF NOT EXISTS` won't add new columns to an existing table, the schema.sql additions (`reverted_at`, `revert_pr_url`) only take effect for fresh DB creation. For the existing `dev.db`, run `ALTER TABLE bounties ADD COLUMN reverted_at TIMESTAMP; ALTER TABLE bounties ADD COLUMN revert_pr_url TEXT;` manually in development, or wipe and reseed.
+
+## Session: V3 Winner-Takes-All + Auditor Scoring Fixes (2026-04-25)
+
+### Winner-takes-all: asked_price_sats is now always max_bounty_sats
+
+`SubmitBidRequest.asked_price_sats` is now optional/deprecated. The bid route ignores the client value entirely and stores `bounty.max_bounty_sats` as `asked_price_sats` in the DB. This means `acceptBid` math (`settledAmount = winningBid.asked_price_sats`, `refundedToPoster = max_bounty - settledAmount`) stays correct with zero changes — when the bid price equals max_bounty, refund is 0 and winner gets everything.
+
+### Tiebreaker: earliest submitted_at, not cheapest price
+
+Changed the auditor tiebreak band from 0.05 → 0.02. Changed the tiebreak criterion from `asked_price_sats ASC` to `submitted_at ASC`. The raw bids SQL query now fetches `submitted_at` and orders by it ascending, so `rawBids.find(b => topTierBidIds.has(b.id))` naturally returns the earliest bid in the top tier. No extra sort needed.
+
+### AuditorWeights rename: test_coverage → test_appropriateness
+
+`Record<keyof AuditorWeights, string>` in `AuditTrailRow.tsx` is the TypeScript tripwire that catches stale criterion keys at compile time. When renaming a weight key, always update: `lib/types.ts` interface, `lib/auditor.ts` defaults + fallback + prompt JSON keys, and `components/AuditTrailRow.tsx` CRITERION_LABELS in the same pass.
+
+### Auditor prompt: grounding rule prevents hallucinated reasoning
+
+Adding an explicit "Reasoning rules" section to the system prompt instructing the model to base reasoning strictly on diff content — and to explicitly say "identical to bid_X" for identical diffs — prevents the model from inventing quality narratives. This is more reliable than post-processing the output.
+
+### test_appropriateness semantics: don't penalize no-new-tests
+
+The old `test_coverage` criterion scored 0.0 for bids that didn't add new tests, even when existing tests covered the change. The new `test_appropriateness` criterion explicitly scores 1.0 when existing tests already cover the change, 0.0 only when tests break or obvious gaps are ignored. The description must be in the scoring criteria section of the prompt, not just the interface comment.
+
+### Python agents: _compute_price was the only price logic
+
+All four agents had a `_compute_price(max_bounty)` helper computing a percentage of max_bounty. Removing it and replacing the call site with `full.get("max_bounty_sats", 0)` is the complete change. The `BID_PERCENTAGE` constant must be removed at the same time — leaving it orphaned causes a linter warning on the `_compute_price` body before the body is removed.
+
+### expireBounty fallback: sort changed from asked_price_sats to submitted_at
+
+The non-auditor expire path (`expireBounty` in jobs.ts) also sorted by `asked_price_sats ASC` to auto-select a winner. Updated to `submitted_at ASC` for consistency with V3 winner-takes-all semantics.
+
+---
+
 ## Session: V2.5 DB Ledger + Quality Auditor (2026-04-26)
 
 ### schema.sql semicolons in comments broke db.ts

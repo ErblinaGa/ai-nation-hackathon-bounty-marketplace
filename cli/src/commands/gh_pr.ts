@@ -12,7 +12,7 @@
  *  5. gh pr create
  *  6. PATCH /api/bounty/<id> with github_pr_url
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,13 +47,80 @@ interface WinningDiff {
 }
 
 /**
+ * [cli/gh_pr][normalizeNewFileDiffs] Rewrites incorrect `--- a/<path>` headers
+ * to `--- /dev/null` for hunks that create new files (source line count = 0).
+ *
+ * Mirror of lib/sandbox.ts normalizeNewFileDiffs — duplicated here because the
+ * CLI is a standalone ESM package that cannot import from the Next.js lib tree.
+ */
+function normalizeNewFileDiffs(diff: string, dir: string): string {
+  const lines = diff.split("\n");
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (line.startsWith("--- ")) {
+      const minusLine = line;
+      const plusLine = lines[i + 1] ?? "";
+
+      if (plusLine.startsWith("+++ ")) {
+        const minusPath = minusLine.slice(4).trim();
+
+        let relPath: string | null = null;
+        if (minusPath.startsWith("a/")) {
+          relPath = minusPath.slice(2);
+        } else if (minusPath === "/dev/null" || minusPath === "a/dev/null") {
+          relPath = null;
+        }
+
+        let firstHunkIdx = -1;
+        for (let j = i + 2; j < lines.length; j++) {
+          if (lines[j].startsWith("@@ ")) {
+            firstHunkIdx = j;
+            break;
+          }
+          if (lines[j].startsWith("--- ") && (lines[j + 1] ?? "").startsWith("+++ ")) {
+            break;
+          }
+        }
+
+        const firstHunk = firstHunkIdx >= 0 ? lines[firstHunkIdx] : "";
+        const isNewFileHunk = /^@@ -0(,0)? \+/.test(firstHunk);
+        const isWrongDevNull = minusPath === "a/dev/null";
+
+        if (isNewFileHunk && relPath !== null && !existsSync(join(dir, relPath))) {
+          result.push("--- /dev/null");
+        } else if (isWrongDevNull) {
+          result.push("--- /dev/null");
+        } else {
+          result.push(minusLine);
+        }
+
+        i++;
+        continue;
+      }
+    }
+
+    result.push(line);
+    i++;
+  }
+
+  return result.join("\n");
+}
+
+/**
  * [cli/gh_pr][applyDiff] Applies a unified diff to a git working tree.
  * Falls back to `patch -p1` if `git apply` fails.
  */
 function applyDiff(repoDir: string, diff: string): void {
   const patchFile = join(repoDir, ".lb-patch.diff");
+  // Normalize new-file diff headers before applying (LLMs often produce
+  // `--- a/<path>` for new files instead of `--- /dev/null`).
+  const withFixedHeaders = normalizeNewFileDiffs(diff, repoDir);
   // LLM diffs often miss trailing newline that POSIX patch tools require.
-  const normalized = diff.endsWith("\n") ? diff : diff + "\n";
+  const normalized = withFixedHeaders.endsWith("\n") ? withFixedHeaders : withFixedHeaders + "\n";
   writeFileSync(patchFile, normalized, "utf-8");
 
   // Patch CLI first (more lenient with LLM hunk drift), then git apply variants

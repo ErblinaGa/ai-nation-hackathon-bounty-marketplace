@@ -13,7 +13,7 @@ const CRITERION_LABELS: Record<keyof AuditorWeights, string> = {
   code_quality: "Code Quality",
   completeness: "Completeness",
   convention_match: "Convention",
-  test_coverage: "Tests",
+  test_appropriateness: "Tests",
   maintainability: "Maintainability",
   no_new_deps: "No New Deps",
   security: "Security",

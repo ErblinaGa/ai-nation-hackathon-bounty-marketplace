@@ -33,7 +33,8 @@ export async function GET(
                 max_bounty_sats, bid_stake_sats, posting_fee_sats,
                 deadline_at, status, winning_bid_id, created_at,
                 github_repo, github_issue_number, github_commit_sha, github_pr_url,
-                auditor_config, auditor_result, extension_count, merged_at
+                auditor_config, auditor_result, extension_count, merged_at,
+                reverted_at, revert_pr_url
          FROM bounties WHERE id = ?`
       )
       .get(id) as
@@ -63,6 +64,8 @@ export async function GET(
           auditor_result: string | null;
           extension_count: number | null;
           merged_at: string | null;
+          reverted_at: string | null;
+          revert_pr_url: string | null;
         }
       | undefined;
 
@@ -159,6 +162,8 @@ export async function GET(
       })(),
       extension_count: bounty.extension_count ?? 0,
       merged_at: bounty.merged_at ?? null,
+      reverted_at: bounty.reverted_at ?? null,
+      revert_pr_url: bounty.revert_pr_url ?? null,
     };
 
     // Poster can see their own pubkey context — already included
@@ -195,7 +200,7 @@ export async function PATCH(
 
   const callerPubkey = getPubkeyFromRequest(req);
 
-  let body: { github_pr_url?: string; merged_at?: string };
+  let body: { github_pr_url?: string; merged_at?: string; reverted_at?: string; revert_pr_url?: string };
   try {
     body = await req.json();
   } catch {
@@ -205,9 +210,9 @@ export async function PATCH(
     );
   }
 
-  if (!body.github_pr_url?.trim() && !body.merged_at?.trim()) {
+  if (!body.github_pr_url?.trim() && !body.merged_at?.trim() && !body.reverted_at?.trim() && !body.revert_pr_url?.trim()) {
     return NextResponse.json(
-      { success: false, error: "At least one of github_pr_url or merged_at is required in PATCH body" },
+      { success: false, error: "At least one of github_pr_url, merged_at, reverted_at, or revert_pr_url is required in PATCH body" },
       { status: 400 }
     );
   }
@@ -245,6 +250,14 @@ export async function PATCH(
       setClauses.push("merged_at = ?");
       values.push(body.merged_at);
     }
+    if (body.reverted_at?.trim()) {
+      setClauses.push("reverted_at = ?");
+      values.push(body.reverted_at);
+    }
+    if (body.revert_pr_url?.trim()) {
+      setClauses.push("revert_pr_url = ?");
+      values.push(body.revert_pr_url);
+    }
 
     values.push(id);
     db.prepare(`UPDATE bounties SET ${setClauses.join(", ")} WHERE id = ?`).run(...values);
@@ -254,6 +267,8 @@ export async function PATCH(
       id,
       ...(body.github_pr_url ? { github_pr_url: body.github_pr_url } : {}),
       ...(body.merged_at ? { merged_at: body.merged_at } : {}),
+      ...(body.reverted_at ? { reverted_at: body.reverted_at } : {}),
+      ...(body.revert_pr_url ? { revert_pr_url: body.revert_pr_url } : {}),
     });
   } catch (err) {
     console.error(`[PATCH /api/bounty/${id}] error:`, err);

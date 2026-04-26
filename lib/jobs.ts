@@ -383,13 +383,13 @@ export async function expireBounty(bountyId: string): Promise<void> {
 
   if (!bounty) return; // Already processed
 
-  // Find cheapest PASS bid
-  const cheapestPass = db
+  // V3 winner-takes-all: all bids commit to the full bounty, so pick by earliest submitted_at.
+  const earliestPass = db
     .prepare(
       `SELECT id, asked_price_sats, stake_payment_hash, bidder_pubkey, code
        FROM bids
        WHERE bounty_id = ? AND test_status = 'PASS' AND status = 'PASS'
-       ORDER BY asked_price_sats ASC
+       ORDER BY submitted_at ASC
        LIMIT 1`
     )
     .get(bountyId) as
@@ -402,12 +402,12 @@ export async function expireBounty(bountyId: string): Promise<void> {
       }
     | undefined;
 
-  if (cheapestPass) {
-    // Auto-select cheapest PASS bid — same logic as POST /accept
+  if (earliestPass) {
+    // Auto-select earliest PASS bid — winner-takes-all, quality tiebreaker is submission time
     console.log(
-      `[jobs][expire] bounty ${bountyId} — auto-selecting cheapest PASS bid ${cheapestPass.id}`
+      `[jobs][expire] bounty ${bountyId} — auto-selecting earliest PASS bid ${earliestPass.id}`
     );
-    await acceptBid(bountyId, cheapestPass.id);
+    await acceptBid(bountyId, earliestPass.id);
   } else {
     // No PASS bids — cancel poster stake (refund), mark EXPIRED
     console.log(

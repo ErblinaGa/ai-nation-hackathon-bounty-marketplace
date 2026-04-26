@@ -1,5 +1,7 @@
 """
-[balanced_bidder] BalancedBidder — bids 87% of max_bounty on all OPEN bounties.
+[balanced_bidder] BalancedBidder — bids on all OPEN bounties.
+V3 winner-takes-all: always submits with asked_price = max_bounty_sats (full prize).
+Strategy is purely "should I bid on this task?" — no percentage logic.
 Uses claude-sonnet-4-6 (falls back to reference solutions if no ANTHROPIC_API_KEY).
 
 Handles all 3 task types:
@@ -27,17 +29,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 AGENT_NAME = "BalancedBidder"
-BID_PERCENTAGE = 0.87
 POLL_INTERVAL = 10  # seconds
 
 
 def _should_bid(_bounty: dict) -> bool:
     # BalancedBidder bids on everything
     return True
-
-
-def _compute_price(max_bounty: int) -> int:
-    return max(1, int(max_bounty * BID_PERCENTAGE))
 
 
 def _bid_type_for(task_type: str) -> str:
@@ -48,7 +45,7 @@ def _bid_type_for(task_type: str) -> str:
 
 
 async def main() -> None:
-    logger.info("Starting BalancedBidder (strategy: 87%% of max, bids on all)")
+    logger.info("Starting BalancedBidder (strategy: winner-takes-all full bounty, bids on all)")
 
     lightning = LightningClient(AGENT_NAME)
     api = MarketplaceClient()
@@ -84,11 +81,12 @@ async def main() -> None:
                     )
 
                     solution = await llm.generate_solution(full)
-                    price = _compute_price(full.get("max_bounty_sats", 0))
+                    # V3 winner-takes-all: always bid the full bounty amount
+                    price = full.get("max_bounty_sats", 0)
                     bid_type = _bid_type_for(task_type)
 
                     logger.info(
-                        "Submitting bid on '%s' (id=%s) for %d sat (bid_type=%s)",
+                        "Submitting bid on '%s' (id=%s) for %d sat full bounty (bid_type=%s)",
                         full.get("title", ""),
                         bounty_id,
                         price,

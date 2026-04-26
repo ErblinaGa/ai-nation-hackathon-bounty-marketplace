@@ -44,12 +44,9 @@ export async function POST(
       { status: 400 }
     );
   }
-  if (!body.asked_price_sats || body.asked_price_sats <= 0) {
-    return NextResponse.json(
-      { success: false, error: "asked_price_sats must be a positive integer" },
-      { status: 400 }
-    );
-  }
+  // V3 winner-takes-all: asked_price_sats is deprecated and ignored.
+  // The server always stores max_bounty_sats as the bid price so settlement math works.
+  // We still accept the field for backward compat with old clients but never read it.
 
   try {
     const db = getDb();
@@ -87,15 +84,10 @@ export async function POST(
         { status: 409 }
       );
     }
-    if (body.asked_price_sats > bounty.max_bounty_sats) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `asked_price_sats (${body.asked_price_sats}) exceeds max_bounty_sats (${bounty.max_bounty_sats})`,
-        },
-        { status: 400 }
-      );
-    }
+
+    // V3 winner-takes-all: winner always receives the full bounty.
+    // Store max_bounty_sats as asked_price so downstream settlement (acceptBid) Just Works.
+    const askedPriceSats = bounty.max_bounty_sats;
 
     const codeHash = sha256(body.code);
     const bidId = `bid_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
@@ -132,7 +124,7 @@ export async function POST(
       codeHash,
       body.code, // stored but never returned unless winner
       ensembleMetaJson,
-      body.asked_price_sats,
+      askedPriceSats, // V3: always max_bounty_sats (winner-takes-all)
       stakeInvoice.paymentRequest,
       stakeInvoice.paymentHash,
       JSON.stringify(previewMeta)

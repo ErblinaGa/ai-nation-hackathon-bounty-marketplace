@@ -50,17 +50,19 @@ export interface RepoConnection {
   connected_at: string;
 }
 
-// V2.5: Auditor scoring weights — quality-only. Price is NOT a scoring criterion;
-// it is only used as a tiebreaker among bids within 0.05 of the top score.
+// V3: Auditor scoring weights — quality-only. Price is NOT a scoring criterion;
+// tiebreaker is now submission time (earliest wins) among bids within 0.02 of top score.
 export interface AuditorWeights {
   code_quality: number;         // readability, naming, idioms (default 0.9)
   completeness: number;         // solves whole issue, handles edge cases (default 0.9)
   convention_match: number;     // matches existing codebase style (default 0.8)
-  test_coverage: number;        // adds tests, not just passing existing ones (default 0.6)
+  test_appropriateness: number; // 1.0 if existing tests cover OR new tests added for new behavior;
+                                 // 0.5 if unclear; 0.0 only if existing tests broke or obvious gaps ignored.
+                                 // DO NOT penalize bids that don't add new tests when existing tests already cover. (default 0.7)
   maintainability: number;      // no over-engineering, no clever tricks (default 0.7)
   no_new_deps: number;          // penalty for new package.json deps (default 0.6)
   security: number;             // no eval/exec/network/file-write smells (default 1.0)
-  // REMOVED: diff_size, price, bidder_track_record (quality-only per user feedback)
+  // REMOVED: diff_size, price, bidder_track_record, test_coverage (quality-only per user feedback)
 }
 
 export interface AuditorConfig {
@@ -96,7 +98,8 @@ export type BountyStatus =
   | "OPEN"
   | "SETTLED"
   | "EXPIRED"
-  | "CANCELED";
+  | "CANCELED"
+  | "REVERTED";
 
 export type BidStatus =
   | "AWAITING_STAKE"
@@ -146,6 +149,9 @@ export interface Bounty {
   auditor_result: string | null;         // JSON of AuditorResult, written after audit
   extension_count: number;               // 0..max_extensions; tracks re-open rounds
   merged_at: string | null;             // V2.5: ISO timestamp when auto-PR was merged
+  // V3: Revert fields (populated after gh-revert)
+  reverted_at: string | null;
+  revert_pr_url: string | null;
 }
 
 export interface BountyListItem {
@@ -218,6 +224,9 @@ export interface BountyDetail extends BountyListItem {
   auditor_result: AuditorResult | null;     // parsed JSON
   extension_count: number;
   merged_at: string | null;               // V2.5: ISO timestamp when auto-PR was merged
+  // V3: Revert fields
+  reverted_at: string | null;
+  revert_pr_url: string | null;
 }
 
 // --- Lightning ---
@@ -356,7 +365,10 @@ export interface SubmitBidRequest {
   bid_type?: BidType;               // defaults to 'code' (backward compat for snippets)
   code: string;                     // raw code | unified diff | proof JSON depending on bid_type
   ensemble_metadata?: EnsembleMetadata;
-  asked_price_sats: number;
+  /** @deprecated V3: bidder always takes the FULL bounty_sats if they win (winner-takes-all).
+   *  This field is accepted for backward compat but ignored — the server always stores
+   *  asked_price_sats = bounty.max_bounty_sats internally so downstream settlement code works. */
+  asked_price_sats?: number;
 }
 
 export interface SubmitBidResponse {

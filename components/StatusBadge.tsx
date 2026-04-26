@@ -15,6 +15,7 @@ const VARIANT_STYLES: Record<string, string> = {
   AWAITING_STAKE: "bg-accent/10 text-amber border border-accent/30",
   AWAITING_STAKE_PAYMENT: "bg-accent/10 text-amber border border-accent/30",
   CANCELED: "bg-danger/10 text-danger border border-danger/30",
+  REVERTED: "bg-danger/10 text-danger border border-danger/30",
 };
 
 const VARIANT_LABELS: Record<string, string> = {

@@ -22,6 +22,9 @@ import { runGhBounty } from "./commands/gh_bounty.js";
 import { runGhPr } from "./commands/gh_pr.js";
 import { runGhMerge } from "./commands/gh_merge.js";
 import type { MergeStrategy } from "./commands/gh_merge.js";
+import { runGhRevert } from "./commands/gh_revert.js";
+import { runScan_command } from "./commands/scan.js";
+import type { ScanOpts } from "./commands/scan.js";
 
 const DEMO_POSTER_PUBKEY = "02demo_poster_pubkey";
 const DEFAULT_API_BASE = "http://localhost:3000/api";
@@ -425,6 +428,65 @@ program
       console.error(
         `[cli] Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
       );
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// gh-revert command
+// ---------------------------------------------------------------------------
+
+program
+  .command("gh-revert <bounty-id>")
+  .description(
+    "Open a revert PR for a settled + merged GitHub bounty. Winner keeps the sats.",
+  )
+  .option("--api <url>", "API base URL", "http://localhost:3000")
+  .action(async (bountyId: string, opts: { api: string }) => {
+    try {
+      await runGhRevert(bountyId, { api: opts.api });
+    } catch (err) {
+      console.error(
+        `[cli] Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// scan command
+// ---------------------------------------------------------------------------
+
+program
+  .command("scan <owner/repo>")
+  .description(
+    "Scan a GitHub repo with AI, draft improvement candidates, optionally file as bounties.",
+  )
+  .option("--api <url>", "API base URL", DEFAULT_API_BASE)
+  .option(
+    "--apply <ids>",
+    "Comma-separated 1-indexed candidate IDs to apply (e.g. 1,3,5)",
+  )
+  .option(
+    "--browser",
+    "Print the scan-results URL and open in browser",
+    false,
+  )
+  .option(
+    "--auto-apply <severity>",
+    "Auto-file all candidates of given severity: HIGH | MEDIUM | LOW",
+  )
+  .option("--max <n>", "Max candidates to draft (1–10)", "8")
+  .action(async (ownerRepo: string, opts: ScanOpts) => {
+    try {
+      await runScan_command(ownerRepo, opts);
+    } catch (err) {
+      console.error(
+        `[cli] Unexpected error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      if (err instanceof Error && err.stack) {
+        console.error(err.stack);
+      }
       process.exit(1);
     }
   });

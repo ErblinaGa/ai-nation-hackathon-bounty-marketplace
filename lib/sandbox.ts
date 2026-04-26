@@ -191,6 +191,100 @@ function writeFileDeep(filePath: string, content: string): void {
   writeFileSync(filePath, content, "utf8");
 }
 
+/**
+ * [sandbox][normalizeNewFileDiffs] Rewrites incorrect `--- a/<path>` headers to
+ * `--- /dev/null` for hunks that create new files (source line count = 0).
+ *
+ * LLMs frequently emit:
+ *   --- a/lib/persistence.ts
+ *   +++ b/lib/persistence.ts
+ *   @@ -0,0 +1,N @@
+ * which git-apply rejects ("new file depends on old contents").
+ * The correct header for new files is:
+ *   --- /dev/null
+ *   +++ b/lib/persistence.ts
+ *   @@ -0,0 +1,N @@
+ *
+ * Also normalises the malformed variant `--- a/dev/null` that some LLMs emit.
+ *
+ * Only rewrites blocks where:
+ *  1. The first hunk line starts with `@@ -0,0` (source has 0 lines), AND
+ *  2. The source path does NOT exist in tmpDir (confirming it is truly new).
+ *
+ * Blocks that modify existing files are left unchanged.
+ */
+export function normalizeNewFileDiffs(diff: string, tmpDir: string): string {
+  const lines = diff.split("\n");
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Detect start of a per-file block: `--- a/<path>` or `--- /dev/null` or `--- a/dev/null`
+    if (line.startsWith("--- ")) {
+      const minusLine = line;
+      const plusLine = lines[i + 1] ?? "";
+
+      // Only process if the next line is the matching `+++ ` header
+      if (plusLine.startsWith("+++ ")) {
+        // Parse the source path from `--- a/<path>` (strip the `a/` prefix)
+        const minusPath = minusLine.slice(4).trim(); // everything after `--- `
+
+        // Determine the relative path used for the existence check
+        let relPath: string | null = null;
+        if (minusPath.startsWith("a/")) {
+          relPath = minusPath.slice(2); // strip `a/` prefix
+        } else if (
+          minusPath === "/dev/null" ||
+          minusPath === "a/dev/null"
+        ) {
+          // Already correct or another LLM variant — will be normalized below
+          relPath = null;
+        }
+
+        // Look ahead for the first hunk header to check if this is a new-file diff
+        let firstHunkIdx = -1;
+        for (let j = i + 2; j < lines.length; j++) {
+          if (lines[j].startsWith("@@ ")) {
+            firstHunkIdx = j;
+            break;
+          }
+          // Stop searching if we hit another file block
+          if (lines[j].startsWith("--- ") && (lines[j + 1] ?? "").startsWith("+++ ")) {
+            break;
+          }
+        }
+
+        const firstHunk = firstHunkIdx >= 0 ? lines[firstHunkIdx] : "";
+        // New-file hunk always has `-0,0` as the source range
+        const isNewFileHunk = /^@@ -0(,0)? \+/.test(firstHunk);
+
+        // LLM `--- a/dev/null` variant (incorrect path) — always normalize
+        const isWrongDevNull = minusPath === "a/dev/null";
+
+        if (isNewFileHunk && relPath !== null && !existsSync(join(tmpDir, relPath))) {
+          // Source path does not exist in tmpDir + hunk creates from scratch: rewrite
+          result.push("--- /dev/null");
+        } else if (isWrongDevNull) {
+          // Normalise `--- a/dev/null` → `--- /dev/null`
+          result.push("--- /dev/null");
+        } else {
+          result.push(minusLine);
+        }
+
+        i++;
+        continue;
+      }
+    }
+
+    result.push(line);
+    i++;
+  }
+
+  return result.join("\n");
+}
+
 // Apply a unified diff in the given directory.
 // Strategy: patch CLI first (more lenient with LLM-generated diffs), then git apply.
 async function applyDiff(
@@ -370,8 +464,12 @@ async function runCodebase(
       10_000
     );
 
+    // Normalize new-file diff headers before applying (LLMs often produce
+    // `--- a/<path>` for new files instead of `--- /dev/null`).
+    const normalizedDiff = normalizeNewFileDiffs(diff, tmpDir);
+
     // Apply bidder's diff
-    const patchResult = await applyDiff(tmpDir, diff);
+    const patchResult = await applyDiff(tmpDir, normalizedDiff);
     if (!patchResult.success) {
       const runtime_ms = Date.now() - start;
       return {
@@ -460,8 +558,12 @@ async function runBugBounty(
       10_000
     );
 
+    // Normalize new-file diff headers before applying (LLMs often produce
+    // `--- a/<path>` for new files instead of `--- /dev/null`).
+    const normalizedDiff = normalizeNewFileDiffs(diff, tmpDir);
+
     // Apply bidder's fix diff
-    const patchResult = await applyDiff(tmpDir, diff);
+    const patchResult = await applyDiff(tmpDir, normalizedDiff);
     if (!patchResult.success) {
       const runtime_ms = Date.now() - start;
       return {

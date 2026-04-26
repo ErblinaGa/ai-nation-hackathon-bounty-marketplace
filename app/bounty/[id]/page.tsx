@@ -12,6 +12,7 @@ import TaskTypeBadge from "@/components/TaskTypeBadge";
 import Countdown from "@/components/Countdown";
 import StatusBadge from "@/components/StatusBadge";
 import AuditorPanel from "@/components/AuditorPanel";
+import WinnerCodeViewer from "@/components/WinnerCodeViewer";
 import type {
   AcceptBidRequest,
   AcceptBidResponse,
@@ -44,6 +45,10 @@ export default function BountyDetailPage() {
   const [settlement, setSettlement] = useState<SettlementData | null>(null);
   const prevBidIds = useRef<Set<string>>(new Set());
   const [newBidIds, setNewBidIds] = useState<Set<string>>(new Set());
+  const [showWinnerCode, setShowWinnerCode] = useState(false);
+  const [showRevertConfirm, setShowRevertConfirm] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [revertError, setRevertError] = useState<string | null>(null);
 
   const isPoster =
     bounty !== null && bounty.poster_pubkey === DEMO_PUBKEY;
@@ -130,6 +135,32 @@ export default function BountyDetailPage() {
       );
     } finally {
       setAccepting(null);
+    }
+  }
+
+  async function handleRevert() {
+    if (!bounty) return;
+    setReverting(true);
+    setRevertError(null);
+    try {
+      const res = await fetch(`/api/bounty/${id}/revert`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-pubkey": DEMO_PUBKEY,
+        },
+        body: JSON.stringify({}),
+      });
+      const data = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      setShowRevertConfirm(false);
+      fetchBounty();
+    } catch (err) {
+      setRevertError(err instanceof Error ? err.message : "Failed to revert.");
+    } finally {
+      setReverting(false);
     }
   }
 
@@ -273,26 +304,80 @@ export default function BountyDetailPage() {
               </p>
             )}
 
-            {/* ── GitHub PR link — prominent when settled ── */}
-            {isGithubBounty && bounty.github_pr_url && (
-              <div className="mb-6 border border-success/30 bg-success/[0.03] px-5 py-4 flex items-center justify-between gap-4">
+            {/* ── REVERTED badge ── */}
+            {bounty.reverted_at && (
+              <div className="mb-6 border border-danger/30 bg-danger/[0.03] px-5 py-4 flex items-center justify-between gap-4">
                 <div>
-                  <div className="text-[10px] font-mono text-muted tracking-widest uppercase mb-1">
-                    Pull Request Opened
+                  <div className="text-[10px] font-mono text-danger tracking-widest uppercase mb-1">
+                    REVERTED
                   </div>
-                  <span className="font-mono text-sm text-fg">
-                    Winning diff applied — available for review on GitHub
+                  <span className="font-mono text-sm text-fg/70">
+                    Changes were reverted at {new Date(bounty.reverted_at).toLocaleString()}
                   </span>
                 </div>
-                <a
-                  href={bounty.github_pr_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-shrink-0 font-mono text-xs border border-success text-success px-4 py-2 hover:bg-success hover:text-bg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-success"
-                  aria-label="View pull request on GitHub"
-                >
-                  VIEW PR ON GITHUB →
-                </a>
+                {bounty.revert_pr_url && (
+                  <a
+                    href={bounty.revert_pr_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-shrink-0 font-mono text-xs border border-danger text-danger px-4 py-2 hover:bg-danger hover:text-bg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
+                    aria-label="View revert pull request on GitHub"
+                  >
+                    VIEW REVERT PR →
+                  </a>
+                )}
+              </div>
+            )}
+
+            {/* ── GitHub PR link — prominent when settled ── */}
+            {isGithubBounty && bounty.github_pr_url && (
+              <div className="mb-6 border border-success/30 bg-success/[0.03] px-5 py-4">
+                <div className="flex items-center justify-between gap-4 mb-3">
+                  <div>
+                    <div className="text-[10px] font-mono text-muted tracking-widest uppercase mb-1">
+                      Pull Request Opened
+                    </div>
+                    <span className="font-mono text-sm text-fg">
+                      Winning diff applied — available for review on GitHub
+                    </span>
+                  </div>
+                  <a
+                    href={bounty.github_pr_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-shrink-0 font-mono text-xs border border-success text-success px-4 py-2 hover:bg-success hover:text-bg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-success"
+                    aria-label="View pull request on GitHub"
+                  >
+                    VIEW PR ON GITHUB →
+                  </a>
+                </div>
+
+                {/* Action row: View Winner Code + Revert */}
+                <div className="flex items-center gap-3 pt-3 border-t border-success/20">
+                  {/* View Winner Code — SETTLED + winning_bid_id */}
+                  {bounty.status === "SETTLED" && bounty.winning_bid_id && (
+                    <button
+                      type="button"
+                      onClick={() => setShowWinnerCode(true)}
+                      className="font-mono text-xs border border-fg/20 text-fg/70 px-4 py-2 hover:border-fg/40 hover:text-fg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      aria-label="View winner code diff"
+                    >
+                      VIEW WINNER CODE
+                    </button>
+                  )}
+
+                  {/* Revert — only when merged + not yet reverted */}
+                  {bounty.merged_at && !bounty.reverted_at && (
+                    <button
+                      type="button"
+                      onClick={() => setShowRevertConfirm(true)}
+                      className="font-mono text-xs border border-danger/40 text-danger px-4 py-2 hover:bg-danger/10 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger ml-auto"
+                      aria-label="Open revert PR for this bounty"
+                    >
+                      REVERT
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -573,6 +658,71 @@ export default function BountyDetailPage() {
           </section>
         )}
       </div>
+
+      {/* ── WinnerCodeViewer modal ── */}
+      {showWinnerCode && (
+        <WinnerCodeViewer
+          bountyId={id}
+          onClose={() => setShowWinnerCode(false)}
+        />
+      )}
+
+      {/* ── Revert confirmation modal ── */}
+      {showRevertConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#0A0A0A]/85"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowRevertConfirm(false); }}
+          aria-modal="true"
+          role="dialog"
+          aria-label="Confirm revert"
+        >
+          <div className="w-[480px] border border-danger/30 bg-bg p-8">
+            <div className="mb-1 text-[10px] font-mono text-danger tracking-widest uppercase">
+              Confirm Revert
+            </div>
+            <h2 className="font-display font-bold text-2xl tracking-tight text-fg mb-4">
+              Open Revert PR?
+            </h2>
+            <p className="text-sm font-mono text-muted leading-relaxed mb-2">
+              This will clone the repo and open a PR that reverts the changes from the winning bid.
+            </p>
+            <p className="text-sm font-mono text-muted/70 leading-relaxed mb-6">
+              <strong className="text-fg/70">Winner keeps the sats.</strong>{" "}
+              The Lightning settlement is not affected. This is a code-only revert.
+            </p>
+
+            {revertError && (
+              <div
+                className="mb-4 border border-danger/30 bg-danger/5 px-4 py-3 text-xs font-mono text-danger"
+                role="alert"
+              >
+                {revertError}
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => { setShowRevertConfirm(false); setRevertError(null); }}
+                className="font-mono text-xs border border-border text-muted px-5 py-2.5 hover:border-fg/30 hover:text-fg transition-colors"
+                aria-label="Cancel revert"
+                disabled={reverting}
+              >
+                CANCEL
+              </button>
+              <button
+                type="button"
+                onClick={handleRevert}
+                disabled={reverting}
+                className="font-mono text-xs border border-danger text-danger px-5 py-2.5 hover:bg-danger hover:text-bg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                aria-label="Confirm and open revert PR"
+              >
+                {reverting ? "OPENING PR…" : "OPEN REVERT PR"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
