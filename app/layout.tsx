@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Inter_Tight, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import RepoConnectedBanner from "@/components/RepoConnectedBanner";
+import UserMenu from "@/components/UserMenu";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -38,6 +39,17 @@ export default function RootLayout({
       className={`${inter.variable} ${interTight.variable} ${jetbrains.variable}`}
     >
       <body>
+        {/* Top-right user menu — fixed position, above all page content */}
+        <div
+          style={{
+            position: "fixed",
+            top: 12,
+            right: 24,
+            zIndex: 100,
+          }}
+        >
+          <UserMenu />
+        </div>
         <RepoConnectedBanner />
         {children}
       </body>

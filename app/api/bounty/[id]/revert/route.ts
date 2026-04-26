@@ -2,10 +2,11 @@
 // Triggers a git revert of the merged PR for a SETTLED+MERGED GitHub bounty.
 // Auth: x-pubkey must match poster_pubkey
 // Winner keeps sats — this only opens a revert PR on GitHub.
+export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { getPubkeyFromRequest } from "@/lib/auth";
+import { getPubkeyFromRequest, getCurrentUser } from "@/lib/auth";
 import { autoRevert } from "@/lib/github";
 
 const BOUNTY_UI_BASE =
@@ -35,7 +36,19 @@ export async function POST(
     );
   }
 
-  const callerPubkey = getPubkeyFromRequest(req);
+  // Accept auth from either x-pubkey header (legacy/CLI) or Supabase session
+  let callerPubkey = getPubkeyFromRequest(req);
+
+  if (!callerPubkey && process.env.USE_SUPABASE === "true") {
+    try {
+      const user = await getCurrentUser();
+      if (user?.lightning_pubkey) {
+        callerPubkey = user.lightning_pubkey;
+      }
+    } catch {
+      // Fall through — auth check below handles missing pubkey
+    }
+  }
 
   try {
     const db = getDb();

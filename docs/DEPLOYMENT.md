@@ -1,119 +1,191 @@
-# Deployment Notes
+# Deployment Guide
 
-> TL;DR: **For the Spiral pitch, run locally on your laptop.** Don't deploy to Vercel today. Here's why and what to do instead.
+## Section 1: Railway (Recommended)
+
+Railway runs a long-lived Node.js process in a container — exactly the model this app requires.
+`setInterval` jobs survive, the sandbox can call `git`, `patch`, and `python3`, and there is no cold-start overhead.
+
+### One-command deploy
+
+```bash
+npm install -g @railway/cli    # install once
+
+railway login                  # opens browser OAuth
+
+railway init                   # creates a Railway project (run from repo root)
+                               # choose "Empty project", name it e.g. "lightning-bounties"
+
+railway up                     # builds + deploys using nixpacks.toml
+```
+
+Railway detects `nixpacks.toml` automatically and runs the configured build. On success you get a public URL such as `https://lightning-bounties-production.up.railway.app`.
+
+### Set environment variables
+
+In the Railway dashboard → your service → Variables, paste:
+
+```
+# Required
+ANTHROPIC_API_KEY=sk-ant-...
+NEXT_PUBLIC_SUPABASE_URL=https://<projectRef>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
+SUPABASE_SERVICE_ROLE_KEY=eyJ...
+SUPABASE_DB_PASSWORD=<your db password>
+USE_SUPABASE=true            # Supabase auth + magic link OTP + middleware
+USE_SUPABASE_DB=false        # data store: SQLite (default). See "Data store" below.
+
+# Optional
+GITHUB_TOKEN=ghp_...            # for auto-PR + revert CLI commands
+GITHUB_APP_ID=                  # if using GitHub App instead of PAT
+BOUNTY_URL=https://<your-railway-url>   # used in auto-PR body links
+```
+
+Or use the Railway CLI:
+
+```bash
+railway variables set ANTHROPIC_API_KEY=sk-ant-... USE_SUPABASE=true
+```
+
+### Data store
+
+V4 ships with two flags that are decoupled:
+
+- `USE_SUPABASE=true` — Supabase **auth** (cookies, magic link OTP, middleware). Always recommended.
+- `USE_SUPABASE_DB=true` — Supabase Postgres as the **data** store. Optional, see below.
+
+**Recommended for V4 deploys:** `USE_SUPABASE=true` + `USE_SUPABASE_DB=false` (Supabase auth, SQLite data on Railway volume).
+
+**Why:** the Postgres adapter (`lib/db_postgres.ts`) returns Promises but ~110 caller sites in `lib/*` and `app/api/*` use the synchronous better-sqlite3 API. Migrating them is tracked as Phase F. Until then, run with `USE_SUPABASE_DB=false`.
+
+**Railway volume for SQLite persistence:** add a 1 GB volume mounted at `/app/data` and set `DATABASE_URL=file:/app/data/dev.db`. Without a volume, the SQLite file is wiped on every deploy.
+
+### Healthcheck
+
+Railway will poll `GET /api/bounties` every 30 s after deploy. A `200 OK` response marks the service healthy.
+If the app crashes, Railway restarts it automatically (`ON_FAILURE` policy, up to 3 retries).
 
 ---
 
-## Why Vercel is broken for this app (today)
+## Section 2: Docker (Render, Fly.io, self-host)
 
-The current architecture is incompatible with Vercel's serverless model. Three blockers:
+A `Dockerfile` is included for non-Railway container hosts. Multi-stage build: builder stage installs all deps and compiles, runner stage contains only the artifacts.
 
-| Component | Current behavior | Why Vercel breaks it |
+```bash
+# Build
+docker build -t lightning-bounties .
+
+# Run (supply all env vars)
+docker run -p 3000:3000 \
+  -e USE_SUPABASE=true \
+  -e NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co \
+  -e NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ... \
+  -e SUPABASE_SERVICE_ROLE_KEY=eyJ... \
+  -e SUPABASE_DB_PASSWORD=... \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  lightning-bounties
+```
+
+App is available at `http://localhost:3000`.
+
+### Fly.io
+
+```bash
+fly launch --dockerfile Dockerfile --name lightning-bounties
+fly secrets set USE_SUPABASE=true ANTHROPIC_API_KEY=sk-ant-... ...
+fly deploy
+```
+
+### Render
+
+1. New Web Service → connect GitHub repo
+2. Build Command: `docker build -t app . && docker run ...` (or use Render's Dockerfile detection)
+3. Set environment variables in the Render dashboard
+4. Deploy
+
+---
+
+## Section 3: Environment Variables Checklist
+
+| Variable | Required | Description |
 |---|---|---|
-| **`better-sqlite3`** writes to `./dev.db` | Persistent local file | Vercel functions have read-only FS (except `/tmp`, which is wiped per cold-start). DB would reset on every request. |
-| **`lib/jobs.ts`** uses `setInterval(tick, 1000)` | Long-running in-process polling | Vercel functions are stateless and only run during a request. No setInterval survives between invocations. |
-| **Hold-invoice state** lives in `globalThis.__lightning_store` | In-memory map | Same problem: globalThis dies between cold starts. |
-
-This isn't a small fix — it's an architectural rewrite. The whole point of the in-process polling design was demo simplicity (single `npm run dev`, no extra infrastructure). Trading that for serverless compatibility = adding Postgres/Turso, a job queue (Inngest/QStash/Vercel Cron), and external state for Lightning invoices.
-
-**Estimated work to make Vercel deploy work: 8-12 hours.** Not worth doing before the pitch.
+| `USE_SUPABASE` | Yes (prod) | `true` enables Supabase auth (magic link, middleware); `false` for unauth dev |
+| `USE_SUPABASE_DB` | No | `true` routes data to Supabase Postgres (Phase F); leave unset to use SQLite |
+| `NEXT_PUBLIC_SUPABASE_URL` | Yes (prod) | `https://<ref>.supabase.co` |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes (prod) | Public anon key from Supabase dashboard |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes (prod) | Service role key (bypasses RLS for server-side ops) |
+| `SUPABASE_DB_PASSWORD` | Yes (prod) | Database password (used by `lib/db_postgres.ts` for direct pg connection) |
+| `ANTHROPIC_API_KEY` | Yes | Claude API key for auditor + scan agent |
+| `GITHUB_TOKEN` | Recommended | PAT with `repo` scope for auto-PR and revert commands |
+| `BOUNTY_URL` | Recommended | Public URL of your deployment (used in auto-PR body) |
+| `DATABASE_URL` | Local dev only | `file:./dev.db` path for SQLite mode |
 
 ---
 
-## What to do for the pitch
+## Section 4: Post-deploy configuration
 
-**Run locally during the demo.** Hackathon judges expect this. Plug your laptop into the projector, open `localhost:3000`, demo. This is the standard hackathon approach for stateful demos.
+### Supabase: run the migration
+
+If the tables don't exist yet in Supabase (first deploy only):
 
 ```bash
-cd lightning-bounties
-npm run dev                           # terminal 1
-bash agents/run_all.sh                # terminal 2
+node scripts/migrate_supabase.mjs
 ```
 
-That's it. Open `http://localhost:3000` on the projector.
+This applies `supabase/migrations/0001_initial.sql` which creates all 8 tables + RLS policies.
 
-If you really need a public URL (e.g., for judges to click before/after the pitch):
+### GitHub OAuth
 
-### Option A — `ngrok` tunnel (5 min, free)
+In the Supabase dashboard → Authentication → Providers → GitHub:
+
+1. Enable GitHub provider
+2. Enter your GitHub OAuth App credentials (Client ID + Secret)
+3. Set the callback URL to: `https://<your-deployment-url>/auth/callback`
+
+Create a GitHub OAuth App at `https://github.com/settings/developers`:
+- Homepage URL: `https://<your-deployment-url>`
+- Authorization callback URL: `https://<your-deployment-url>/auth/callback`
+
+### Email (magic links)
+
+Supabase provides built-in email via its own SMTP for the free tier (limited to 4 emails/hour).
+For production volume, configure a custom SMTP in Supabase → Authentication → Email:
+
+```
+SMTP Host: smtp.resend.com   (or SendGrid, Postmark, etc.)
+SMTP Port: 587
+SMTP User: resend
+SMTP Pass: <your resend API key>
+Sender: bounties@yourdomain.com
+```
+
+---
+
+## Section 5: Persistent storage notes
+
+When `USE_SUPABASE=true`:
+- All marketplace data lives in Supabase Postgres (8 tables + RLS)
+- Railway's ephemeral disk does NOT matter — no `dev.db` is created
+- Supabase's free tier includes 500 MB Postgres + 1 GB storage
+- The DB password changes when you rotate it in Supabase — update `SUPABASE_DB_PASSWORD` on Railway
+
+When `USE_SUPABASE=false` (local dev):
+- `lib/db_sqlite.ts` creates `./dev.db` on first boot
+- Schema auto-migrates via `lib/schema.sql` (idempotent `CREATE TABLE IF NOT EXISTS`)
+- If you add new columns to `lib/schema.sql`, run `ALTER TABLE` manually on existing `dev.db` (see `docs/LESSONS_LEARNED.md` for the pattern)
+
+---
+
+## Section 6: Local dev quick start
 
 ```bash
-brew install ngrok        # if not installed
-ngrok http 3000
+npm install
+cp .env.example .env        # fill in ANTHROPIC_API_KEY at minimum
+
+npm run dev                 # starts Next.js on http://localhost:3000
+                            # USE_SUPABASE defaults to false → uses SQLite
+
+# In a second terminal (optional — runs AI bidder agents):
+cd agents && bash run_all.sh
 ```
 
-This gives you a public URL like `https://abc123.ngrok.app` that proxies to your local server. Works perfectly with the current architecture because state still lives on your machine.
-
-### Option B — Railway deploy (30 min)
-
-Railway runs your full Node process in a long-lived container — exactly the model this app was built for. Steps:
-
-1. Sign up: https://railway.app
-2. Connect GitHub → "Deploy from repo" → point at `lightning-bounties/`
-3. Set env vars in Railway dashboard (copy from `.env`)
-4. Add a persistent volume for `dev.db` (Railway supports this natively)
-5. Deploy. Railway gives you a public URL.
-
-**Railway works because:**
-- Long-running containers (your `setInterval` jobs survive)
-- Persistent disk for SQLite
-- No serverless cold-start issues
-
-This is what Phase 6 in the original BUILD_PLAN intended (Railway for MCP server) — same pattern works for the main app.
-
-### Option C — Vercel (if you really must)
-
-If you absolutely must use Vercel (e.g., to claim the Vercel sponsor credits), the rewrite path is:
-
-1. Replace `better-sqlite3` with **Turso** or **Vercel Postgres** (~3h)
-2. Replace `lib/jobs.ts` setInterval with **Vercel Cron** + per-request lazy checks (~2h)
-3. Move Lightning invoice state to DB instead of `globalThis` (~1h)
-4. Test full flow in deployed env (~2h)
-5. Handle cold-start latency in the frontend (~1h)
-
-**~8-12 hours.** Skip unless you have free time and someone else handling the pitch prep.
-
----
-
-## What about the Vercel v0 credits (1649/2000)?
-
-`v0` is Vercel's **AI UI generator** — it's not deployment credits, it's credits for asking an LLM to generate React components. Hosting on Vercel is free on the hobby tier.
-
-Use the v0 credits for:
-- A **separate marketing landing page** at `lightning-bounties.com` (after the pitch)
-- A **demo-day slide deck** (v0 can also generate Tailwind slide layouts)
-- A **post-pitch "explainer"** site that's pure marketing, not the demo app
-
-**Don't use v0 to regenerate the demo UI** — that would replace the Bauhaus-style components we built and produce generic AI-dashboard slop.
-
----
-
-## MCP Server Deployment
-
-The MCP server (`mcp-server/`) is a different story. It's a stdio server that runs locally on the user's machine when they invoke it from Claude Desktop. **No deployment needed** — users install it via:
-
-```json
-// ~/Library/Application Support/Claude/claude_desktop_config.json
-{
-  "mcpServers": {
-    "lightning-bounties": {
-      "command": "node",
-      "args": ["/absolute/path/to/lightning-bounties/mcp-server/dist/index.js"],
-      "env": { "API_BASE_URL": "https://your-railway-or-ngrok-url/api" }
-    }
-  }
-}
-```
-
-The MCP server then talks to your locally-running (or Railway-hosted) backend.
-
----
-
-## Decision
-
-For the Spiral pitch on demo day:
-
-1. ✅ **Run local + ngrok tunnel for public URL** — fastest, no surprises
-2. ⚪ **Railway deploy** — only if you want a stable URL that doesn't depend on your laptop being on
-3. ❌ **Vercel deploy** — don't, not without an architecture rewrite
-
-Vercel credits → save for a post-pitch marketing site.
+No database setup needed — `dev.db` is created automatically on first request.

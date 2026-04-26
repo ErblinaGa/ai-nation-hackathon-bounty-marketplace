@@ -1,5 +1,138 @@
 # Lessons Learned
 
+## Session: V4 Bidder CLI + Auth API Routes (2026-04-26)
+
+### withAuth() must not set Content-Type on GET requests
+
+Adding `Content-Type: application/json` to all requests (including GET) caused Next.js to return 405 Method Not Allowed on some routes. Fix: `withAuth()` returns headers without Content-Type — callers add it only for POST/PUT request bodies.
+
+### CLI sub-command nesting with Commander.js
+
+`const authCmd = program.command("auth"); authCmd.command("login").action(...)` is the correct pattern for nested subcommands. Works cleanly in --help output.
+
+### deleteConfig() must import rmSync at module top level
+
+Cannot use `await import("node:fs")` inside a synchronous function. Import `rmSync` at module top level.
+
+### `ensureWallet` is optional on LightningClient interface
+
+Use `lightning.ensureWallet?.()` (optional chaining) — the interface defines it with `?`.
+
+### `since` filter on /api/bounties uses SQLite `created_at > ?` with ISO string
+
+SQLite stores timestamps as ISO strings which are lexicographically sortable. Pass `sinceDate.toISOString()` directly. Watch loop advances `since` to latest `created_at` seen.
+
+### Supabase CLI auth: use signInWithOtp for 6-digit code (not generateLink)
+
+`supabase.auth.admin.generateLink({ type: 'magiclink' })` generates a URL, not a 6-digit code. For CLI OTP, call `supabase.auth.signInWithOtp({ email })`. Verify with `supabase.auth.verifyOtp({ email, token: code, type: 'email' })`.
+
+### Users table guard: check sqlite_master before querying users
+
+`db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()` prevents crashes when Team B's migration hasn't run yet.
+
+### bid_submit.ts sentinel: `bidder_pubkey: "from_api_key"`
+
+The existing bid route requires `bidder_pubkey` in the body. When authenticated via x-api-key, we send `"from_api_key"` as sentinel. Team B will update the bid route to override with the resolved pubkey. Known coordination gap.
+
+
+## Session: V4 Magic Link Auth + Multi-tenant (2026-04-25)
+
+### lib/supabase.ts is server-only — client components must use lib/supabase-browser.ts
+
+`lib/supabase.ts` imports `cookies` from `next/headers` at module level. Any `"use client"` file importing it causes a webpack build error ("You're importing a component that needs next/headers"). Solution: `lib/supabase-browser.ts` exports only browser-safe functions (`getBrowserClient`, `isSupabaseConfigured`). All "use client" files import from `lib/supabase-browser`, never `lib/supabase`.
+
+### API routes using cookies() must declare export const dynamic = "force-dynamic"
+
+Next.js 14 tries to statically prerender all routes at build time. Any API route that reads cookies (via `getServerClient()`) throws "Dynamic server usage" during static generation. Fix: add `export const dynamic = "force-dynamic";` at the top of every such route.
+
+### useSearchParams() without Suspense: fix via layout.tsx, not page.tsx
+
+Next.js 14 build fails when `useSearchParams()` is called outside a Suspense boundary. When the page file is owned by another team, create `app/<route>/layout.tsx` that wraps `{children}` in `<Suspense fallback={null}>`. Fixes build without touching the page.
+
+### ensureLightningPubkey: generate hex pubkey on first bounty post, prefix "02"
+
+Users created via magic link have no `lightning_pubkey` until first activity. Pattern: query `users` table in Supabase, if null generate `"02" + randomBytes(32).toString("hex")`, UPDATE users. Return the key regardless of whether the UPDATE succeeded (temporary key for the request).
+
+### Magic link redirect: emailRedirectTo must include full origin
+
+`signInWithOtp({ email, options: { emailRedirectTo: window.location.origin + '/auth/callback' } })` — the full URL is required. The callback route calls `supabase.auth.exchangeCodeForSession(code)` where `code` comes from the URL `?code=` param. On success, redirect to `/dashboard`.
+
+---
+
+## Session: V4 Soft-Eval + DB Abstraction + Railway Deploy (2026-04-26)
+
+### evaluation_mode column: ALTER TABLE guard needed for existing dev.db
+
+`CREATE TABLE IF NOT EXISTS` does not add new columns to an existing table. Any new column added to `lib/schema.sql` requires an explicit `ALTER TABLE ... ADD COLUMN ...` for existing dev.db files. Added a startup migration guard in `lib/db_sqlite.ts` that checks `PRAGMA table_info(bounties)` and runs the ALTER if the column is missing. Pattern: add this guard for every new column in `db_sqlite.ts` going forward.
+
+### DB abstraction: keep getDb() typed as Database.Database for backward compat
+
+Changing `getDb()` to return a union type `Database.Database | PostgresDb` breaks ~50 call sites because TypeScript infers `.run().changes` as `Promise<{...}> | RunResult` which has no `.changes` property. The fix: keep `getDb()` typed as `Database.Database` and use `as unknown as Database.Database` cast for Postgres mode. Add `getDbAsync()` as the new entry point for code that explicitly handles both modes. No callers needed to change.
+
+### Postgres transaction() callback: must be generic, not typed with pg.PoolClient
+
+better-sqlite3 `db.transaction(fn)(args)` passes args through to fn. The Postgres adapter's `transaction()` must match this signature: `<T extends (...args) => void>(fn: T) => (...args: Parameters<T>) => Promise<void>`. Using a concrete `(client?: pg.PoolClient) => void` signature breaks existing callers that pass typed callbacks like `(items: ScanCandidate[]) => void`.
+
+### Soft-eval flow: jobs.ts skips sandbox entirely for auditor_review_only
+
+For `auditor_review_only` mode, `runTestsForBid` returns early after marking bid `test_status='PASS'` and `status='PASS'` with the soft-eval sentinel output. The auditor query then picks up these PASS bids and judges them directly. No sandbox code runs.
+
+### checkExpiredBounties must exclude auditor_review_only
+
+The expire path only applies to `strict_tests` mode bounties. Without an explicit `evaluation_mode != 'auditor_review_only'` filter in the WHERE clause, soft-eval non-GitHub bounties would fall into the expire path (auto-pick earliest PASS bid) instead of the auditor path. Added the exclusion.
+
+### Railway healthcheck: use /api/bounties, not /api/health
+
+No `/api/health` endpoint exists. `/api/bounties` always returns 200 even when the list is empty. `healthcheckTimeout: 30` gives Next.js time to boot before Railway marks the service unhealthy.
+
+### nixpacks: CLI build must be explicit in phases.install and phases.build
+
+nixpacks does not auto-recurse into subdirectories. Both `npm ci` (root + `cli/`) go in `phases.install`, both `npm run build` go in `phases.build`. Order matters: root build first, then CLI.
+
+### JSONB columns in Postgres: pg driver returns parsed objects, not strings
+
+SQLite stores JSON columns as TEXT — consumers call `JSON.parse()`. The pg driver parses JSONB automatically, returning plain JS objects. The `db_postgres.ts` normalizer re-stringifies all objects (`JSON.stringify(v)`) so existing consumers continue to call `JSON.parse()` without changes. Arrays are also stringified. This is the most critical compat detail in the abstraction layer.
+
+### Postgres boolean coercion: true/false → 0/1
+
+SQLite uses 0/1 for boolean-ish values. Postgres returns `true`/`false`. The `normalizeRow` function in `db_postgres.ts` converts: `v ? 1 : 0`. No caller changes needed.
+
+### Postgres date objects: convert to ISO strings at the adapter boundary
+
+pg returns TIMESTAMPTZ as JavaScript `Date` objects. Consumers expect ISO strings (same as SQLite TEXT timestamps). The normalizer calls `.toISOString()` on any Date value before returning the row.
+
+---
+
+## Session: V4 GitHub OAuth + /post production page (2026-04-25)
+
+### lib/supabase.ts imports next/headers at module level — do NOT import it from "use client" components
+
+`lib/supabase.ts` imports `cookies` from `next/headers` at the top of the file (not inside a function),
+which makes it server-only. Any `"use client"` file that imports from it causes a webpack build error:
+"You're importing a component that needs next/headers."
+
+Fix: use `lib/supabase-browser.ts` (already exists in project) for all client-side Supabase access.
+That file only exports `getBrowserClient()` and `isSupabaseConfigured()` without `next/headers`.
+
+### provider_token is session-time only — not persisted across logouts
+
+After Supabase GitHub OAuth, `session.provider_token` contains the GitHub access token.
+This token is NOT re-hydrated on subsequent sessions after logout/login. For long-lived access,
+the token must be persisted to a database column (e.g. `github_token_encrypted` on users table).
+The `/api/github/repos` route falls back to `user.user_metadata.provider_token` as a secondary
+check, but that is also not guaranteed after re-login.
+
+### GitHub issues endpoint returns pull requests too — always filter on pull_request field
+
+`GET /repos/{owner}/{repo}/issues` returns both issues and pull requests.
+Filter: `rawIssues.filter((i) => !i.pull_request)` to get issues only.
+
+### IssuePicker: abort previous fetch when repo changes
+
+Use `AbortController` + `useRef` to cancel in-flight fetch when the user switches repos.
+Otherwise the slower fetch from the old repo can resolve after the faster one from the new repo,
+overwriting the correct results.
+
 ## Session: V3 Scan Agent (2026-04-25)
 
 ### glob is not in root node_modules — use readdirSync recursion in lib/

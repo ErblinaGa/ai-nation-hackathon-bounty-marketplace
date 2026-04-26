@@ -93,6 +93,9 @@ export interface AuditorResult {
   notes: string;                // overall summary (e.g. "Top 2 candidates were close...")
 }
 
+// V4: Soft-eval mode — auditor-only review without sandbox tests
+export type EvaluationMode = "strict_tests" | "auditor_review_only";
+
 export type BountyStatus =
   | "AWAITING_STAKE_PAYMENT"
   | "OPEN"
@@ -126,6 +129,8 @@ export interface Bounty {
   description: string;
   language: Language;
   task_type: TaskType;
+  // V4: Controls whether sandbox tests run or auditor is sole judge
+  evaluation_mode: EvaluationMode;
   task_payload: string | null;  // JSON string of CodebasePayload | BugBountyPayload | null (snippet)
   starter_code: string | null;
   test_suite: string;
@@ -339,6 +344,9 @@ export interface PostBountyRequest {
   description: string;
   language: Language;
   task_type?: TaskType;             // defaults to 'snippet' if omitted (backward compat)
+  // V4: defaults to 'strict_tests' if omitted (backward compat)
+  // Use 'auditor_review_only' for any-language, refactor, docs, infra tasks where sandbox can't run tests.
+  evaluation_mode?: EvaluationMode;
   task_payload?: CodebasePayload | BugBountyPayload | null;
   starter_code?: string;
   test_suite: string;               // for snippet: jest/pytest tests; for codebase/bug_bounty: marker (real tests live in payload)

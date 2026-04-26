@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS bounties (
   description TEXT NOT NULL,
   language TEXT NOT NULL,
   task_type TEXT NOT NULL DEFAULT 'snippet',  -- 'snippet' | 'codebase' | 'bug_bounty'
+  evaluation_mode TEXT NOT NULL DEFAULT 'strict_tests',  -- 'strict_tests' | 'auditor_review_only'
   task_payload TEXT,                           -- JSON: CodebasePayload | BugBountyPayload | null
   starter_code TEXT,
   test_suite TEXT NOT NULL,

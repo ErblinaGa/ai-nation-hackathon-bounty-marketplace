@@ -12,6 +12,8 @@ export async function GET(req: NextRequest) {
   const languageFilter = searchParams.get("language");
   const taskTypeFilter = searchParams.get("task_type");
   const minBountyParam = searchParams.get("min_bounty");
+  // lb watch: only return bounties created after this ISO timestamp
+  const sinceParam = searchParams.get("since");
 
   if (taskTypeFilter && !["snippet", "codebase", "bug_bounty"].includes(taskTypeFilter)) {
     return NextResponse.json(
@@ -26,6 +28,18 @@ export async function GET(req: NextRequest) {
       { success: false, error: "min_bounty must be a non-negative integer" },
       { status: 400 }
     );
+  }
+
+  // Validate `since` param if provided
+  let sinceDate: Date | null = null;
+  if (sinceParam) {
+    sinceDate = new Date(sinceParam);
+    if (isNaN(sinceDate.getTime())) {
+      return NextResponse.json(
+        { success: false, error: "since must be a valid ISO timestamp" },
+        { status: 400 }
+      );
+    }
   }
 
   try {
@@ -49,6 +63,10 @@ export async function GET(req: NextRequest) {
     if (minBounty !== null) {
       conditions.push("b.max_bounty_sats >= ?");
       params.push(minBounty);
+    }
+    if (sinceDate !== null) {
+      conditions.push("b.created_at > ?");
+      params.push(sinceDate.toISOString());
     }
 
     const where =

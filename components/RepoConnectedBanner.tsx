@@ -75,8 +75,32 @@ export default function RepoConnectedBanner() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  // Don't render at all if no repos
-  if (repos.length === 0) return null;
+  // Show a "connect" CTA if no repos — same banner height, different content
+  if (repos.length === 0) {
+    return (
+      <div
+        className="border-b border-border bg-fg/[0.018]"
+        role="banner"
+        aria-label="No GitHub repositories connected"
+      >
+        <div className="max-w-[1280px] mx-auto px-8 h-9 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="w-1.5 h-1.5 bg-border flex-shrink-0" aria-hidden="true" />
+            <span className="text-[10px] font-mono text-muted/60 tracking-widest uppercase">
+              No repos connected
+            </span>
+          </div>
+          <Link
+            href="/repos/connect"
+            className="text-[10px] font-mono text-muted tracking-widest uppercase hover:text-accent transition-colors flex-shrink-0"
+            aria-label="Connect a GitHub repository"
+          >
+            Connect GitHub →
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   const primary = repos[0];
   const hasMultiple = repos.length > 1;
@@ -162,7 +186,7 @@ export default function RepoConnectedBanner() {
 
         {/* Right — "Connect another" link */}
         <Link
-          href="/repos"
+          href="/repos/connect"
           className="text-[10px] font-mono text-muted tracking-widest uppercase hover:text-fg transition-colors flex-shrink-0"
           aria-label="Connect another repository"
         >

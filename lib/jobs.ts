@@ -70,7 +70,7 @@ async function checkPendingBidStakes(): Promise<void> {
   const pendingBids = db
     .prepare(
       `SELECT b.id, b.bounty_id, b.stake_payment_hash, b.code, b.asked_price_sats,
-              bn.language, bn.test_suite, bn.task_type, bn.task_payload
+              bn.language, bn.test_suite, bn.task_type, bn.task_payload, bn.evaluation_mode
        FROM bids b
        JOIN bounties bn ON bn.id = b.bounty_id
        WHERE b.status = 'AWAITING_STAKE'`
@@ -85,6 +85,7 @@ async function checkPendingBidStakes(): Promise<void> {
     test_suite: string;
     task_type: string;
     task_payload: string | null;
+    evaluation_mode: string | null;
   }>;
 
   for (const bid of pendingBids) {
@@ -116,10 +117,24 @@ async function runTestsForBid(bid: {
   test_suite: string;
   task_type: string;
   task_payload: string | null;
+  evaluation_mode: string | null;
 }): Promise<void> {
   const db = getDb();
   const lightning = getLightningClient();
   const sandbox = getSandboxClient();
+
+  // V4: Soft-eval mode — skip sandbox entirely; auditor is the sole judge.
+  if (bid.evaluation_mode === "auditor_review_only") {
+    console.log(`[jobs] bid ${bid.id} is soft-eval: skipping sandbox, marking PASS for auditor`);
+    db.prepare(
+      "UPDATE bids SET test_status = 'PASS', test_output = ?, status = 'PASS' WHERE id = ?"
+    ).run(
+      "[soft-eval] no automated tests run; auditor will review code quality directly.",
+      bid.id
+    );
+    // Stake stays locked until auditor picks a winner (same as normal PASS path)
+    return;
+  }
 
   try {
     console.log(`[jobs] running tests for bid ${bid.id} (task_type=${bid.task_type})`);
@@ -210,8 +225,9 @@ async function runTestsForBid(bid: {
   }
 }
 
-// (c) Auto-expire free-form bounties (non-GitHub) past deadline.
-// GitHub-driven bounties are handled by checkAuditableGithubBounties instead.
+// (c) Auto-expire free-form bounties (non-GitHub, non-soft-eval) past deadline.
+// GitHub-driven bounties and auditor_review_only bounties are handled by
+// checkAuditableGithubBounties instead.
 async function checkExpiredBounties(): Promise<void> {
   const db = getDb();
   const lightning = getLightningClient();
@@ -222,6 +238,7 @@ async function checkExpiredBounties(): Promise<void> {
        FROM bounties
        WHERE status = 'OPEN'
          AND github_repo IS NULL
+         AND evaluation_mode != 'auditor_review_only'
          AND datetime(deadline_at) <= datetime('now')`
     )
     .all() as Array<{
@@ -242,17 +259,19 @@ async function checkExpiredBounties(): Promise<void> {
   }
 }
 
-// (d) For GitHub-driven bounties past deadline with no audit yet: run auditor, persist result, act.
+// (d) For GitHub-driven bounties (or soft-eval bounties) past deadline with no audit yet:
+// run auditor, persist result, act.
 // Idempotent: bounties where auditor_result IS NOT NULL are skipped.
 async function checkAuditableGithubBounties(): Promise<void> {
   const db = getDb();
 
+  // V4: Also pick up auditor_review_only bounties that are past deadline
   const auditableBounties = db
     .prepare(
-      `SELECT id, auditor_config, extension_count, created_at, deadline_at
+      `SELECT id, auditor_config, extension_count, created_at, deadline_at, evaluation_mode
        FROM bounties
        WHERE status = 'OPEN'
-         AND github_repo IS NOT NULL
+         AND (github_repo IS NOT NULL OR evaluation_mode = 'auditor_review_only')
          AND auditor_result IS NULL
          AND datetime(deadline_at) <= datetime('now')`
     )
@@ -262,17 +281,20 @@ async function checkAuditableGithubBounties(): Promise<void> {
     extension_count: number;
     created_at: string;
     deadline_at: string;
+    evaluation_mode: string | null;
   }>;
 
   for (const bounty of auditableBounties) {
     // Atomic claim: set a sentinel auditor_result so subsequent ticks skip this bounty.
     // The runAuditForBounty function will overwrite with the real result.
-    const claim = db
-      .prepare(
-        "UPDATE bounties SET auditor_result = '{\"_claimed\":true}' WHERE id = ? AND auditor_result IS NULL"
-      )
-      .run(bounty.id);
-    if (claim.changes === 0) continue; // Another tick already claimed it
+    const claimResult = await Promise.resolve(
+      db
+        .prepare(
+          "UPDATE bounties SET auditor_result = '{\"_claimed\":true}' WHERE id = ? AND auditor_result IS NULL"
+        )
+        .run(bounty.id)
+    );
+    if (claimResult.changes === 0) continue; // Another tick already claimed it
 
     // Fire-and-forget per bounty so one slow audit doesn't block others.
     runAuditForBounty(bounty).catch((err) => {
@@ -287,6 +309,7 @@ async function runAuditForBounty(bounty: {
   extension_count: number;
   created_at: string;
   deadline_at: string;
+  evaluation_mode: string | null;
 }): Promise<void> {
   const db = getDb();
 

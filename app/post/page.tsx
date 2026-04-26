@@ -1,10 +1,14 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import TemplateButtons from "@/components/TemplateButtons";
 import LightningInvoiceModal from "@/components/LightningInvoiceModal";
+import RepoPicker from "@/components/RepoPicker";
+import IssuePicker from "@/components/IssuePicker";
+import EvaluationModePicker, { type EvaluationMode } from "@/components/EvaluationModePicker";
+import MarkdownPreview from "@/components/MarkdownPreview";
 import type {
   Language,
   TaskType,
@@ -14,8 +18,77 @@ import type {
   BugBountyPayload,
 } from "@/lib/types";
 import type { DemoTask } from "@/seed/demo_tasks";
+import type { GitHubIssue } from "@/app/api/github/issues/route";
+import type { IssueContext } from "@/app/api/github/issue/route";
 
 const POSTER_PUBKEY = "02demo_poster_pubkey";
+
+// ─── Tab definition ───────────────────────────────────────────────────────────
+
+type Tab = "from_issue" | "free_form" | "snippet";
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: "from_issue", label: "From Issue" },
+  { id: "free_form", label: "Free-form" },
+  { id: "snippet", label: "Quick Snippet" },
+];
+
+// ─── From Issue form state ────────────────────────────────────────────────────
+
+interface FromIssueFormState {
+  repo: string;
+  issue: GitHubIssue | null;
+  title: string;
+  description: string;
+  language: Language;
+  max_bounty_sats: string;
+  deadline_minutes: string;
+  evaluation_mode: EvaluationMode;
+  // Extracted from issue
+  context_files: Array<{ path: string; content: string }>;
+  context_loading: boolean;
+  context_error: string | null;
+}
+
+const DEFAULT_FROM_ISSUE: FromIssueFormState = {
+  repo: "",
+  issue: null,
+  title: "",
+  description: "",
+  language: "typescript",
+  max_bounty_sats: "20000",
+  deadline_minutes: "10",
+  evaluation_mode: "auditor_only",
+  context_files: [],
+  context_loading: false,
+  context_error: null,
+};
+
+// ─── Free-form form state ─────────────────────────────────────────────────────
+
+interface FreeFormState {
+  repo: string;
+  title: string;
+  body: string;
+  acceptance_criteria: string;
+  language: Language;
+  max_bounty_sats: string;
+  deadline_minutes: string;
+  evaluation_mode: EvaluationMode;
+  attached_files: Array<{ path: string; content: string }>;
+}
+
+const DEFAULT_FREE_FORM: FreeFormState = {
+  repo: "",
+  title: "",
+  body: "",
+  acceptance_criteria: "",
+  language: "typescript",
+  max_bounty_sats: "20000",
+  deadline_minutes: "10",
+  evaluation_mode: "strict_tests",
+  attached_files: [],
+};
 
 // ─── Snippet form state ───────────────────────────────────────────────────────
 
@@ -39,152 +112,6 @@ const DEFAULT_SNIPPET_FORM: SnippetFormState = {
   deadline_minutes: "5",
 };
 
-// ─── Codebase form state ──────────────────────────────────────────────────────
-
-interface CodebaseFormState {
-  title: string;
-  description: string;
-  language: Language;
-  context_files_json: string;
-  test_command: string;
-  task_description: string;
-  max_bounty_sats: string;
-  deadline_minutes: string;
-}
-
-const DEFAULT_CODEBASE_FORM: CodebaseFormState = {
-  title: "",
-  description: "",
-  language: "typescript",
-  context_files_json: "[]",
-  test_command: "npm test",
-  task_description: "",
-  max_bounty_sats: "20000",
-  deadline_minutes: "10",
-};
-
-// ─── Bug Bounty form state ────────────────────────────────────────────────────
-
-interface BugBountyFormState {
-  title: string;
-  description: string;
-  language: Language;
-  target_code: string;
-  symptom: string;
-  failing_input_example: string;
-  hidden_test_suite: string;
-  max_bounty_sats: string;
-  deadline_minutes: string;
-}
-
-const DEFAULT_BUG_BOUNTY_FORM: BugBountyFormState = {
-  title: "",
-  description: "",
-  language: "typescript",
-  target_code: "",
-  symptom: "",
-  failing_input_example: "",
-  hidden_test_suite: "",
-  max_bounty_sats: "10000",
-  deadline_minutes: "8",
-};
-
-// ─── Hardcoded demo templates ─────────────────────────────────────────────────
-
-const CODEBASE_TEMPLATE: CodebaseFormState = {
-  title: "Add dark mode to Todo app",
-  description:
-    "Implement a dark mode toggle for the Todo application. Should persist preference to localStorage and apply a CSS class to the document root.",
-  language: "typescript",
-  context_files_json: JSON.stringify(
-    [
-      {
-        path: "src/App.tsx",
-        content: `import { useState } from 'react';
-import TodoList from './TodoList';
-
-export default function App() {
-  const [todos, setTodos] = useState<string[]>([]);
-  return (
-    <div className="app">
-      <h1>Todo App</h1>
-      <TodoList todos={todos} setTodos={setTodos} />
-    </div>
-  );
-}`,
-      },
-      {
-        path: "src/TodoList.tsx",
-        content: `interface Props {
-  todos: string[];
-  setTodos: (t: string[]) => void;
-}
-
-export default function TodoList({ todos, setTodos }: Props) {
-  return (
-    <ul>
-      {todos.map((t, i) => (
-        <li key={i}>{t}</li>
-      ))}
-    </ul>
-  );
-}`,
-      },
-      {
-        path: "src/index.css",
-        content: `.app { font-family: sans-serif; max-width: 600px; margin: 0 auto; }
-.dark { background: #111; color: #f0f0f0; }`,
-      },
-    ],
-    null,
-    2
-  ),
-  test_command: "npm test",
-  task_description:
-    "Add a dark mode toggle button to App.tsx. When clicked, toggle a `dark` class on `document.documentElement`. Persist the choice to `localStorage` under the key `theme`. Tests will check that the toggle works and localStorage is written.",
-  max_bounty_sats: "20000",
-  deadline_minutes: "10",
-};
-
-const BUG_BOUNTY_TEMPLATE: BugBountyFormState = {
-  title: "Fix parseISODate",
-  description:
-    "parseISODate returns wrong timestamps for dates near DST transitions.",
-  language: "typescript",
-  target_code: `/**
- * Parse an ISO 8601 date string and return a UTC timestamp in ms.
- * Handles: YYYY-MM-DD, YYYY-MM-DDTHH:mm:ss, YYYY-MM-DDTHH:mm:ssZ
- */
-export function parseISODate(input: string): number {
-  // BUG: Uses local timezone when no explicit TZ offset is given,
-  // causing wrong results across DST boundaries.
-  return new Date(input).getTime();
-}`,
-  symptom:
-    "Returns wrong timestamp when input has no timezone offset and the local machine is in a DST-affected timezone. Example: parseISODate('2024-03-10T02:30:00') on a US/Eastern machine returns a value that's off by 1 hour compared to the UTC interpretation.",
-  failing_input_example: `parseISODate('2024-03-10T02:30:00')
-// Expected (UTC): 1710030600000
-// Got (US/Eastern DST gap): varies by machine timezone`,
-  hidden_test_suite: `import { parseISODate } from './solution';
-
-describe('parseISODate', () => {
-  test('date-only string treated as UTC midnight', () => {
-    expect(parseISODate('2024-01-15')).toBe(new Date('2024-01-15T00:00:00Z').getTime());
-  });
-  test('datetime without Z treated as UTC', () => {
-    expect(parseISODate('2024-03-10T02:30:00')).toBe(1710034200000);
-  });
-  test('datetime with Z passes through unchanged', () => {
-    expect(parseISODate('2024-03-10T02:30:00Z')).toBe(1710034200000);
-  });
-  test('works for DST ambiguous times', () => {
-    expect(parseISODate('2024-11-03T01:30:00')).toBe(1730597400000);
-  });
-});`,
-  max_bounty_sats: "10000",
-  deadline_minutes: "8",
-};
-
 // ─── Modal data ───────────────────────────────────────────────────────────────
 
 interface ModalData {
@@ -194,7 +121,13 @@ interface ModalData {
   bountyId: string;
 }
 
-// ─── Field components ─────────────────────────────────────────────────────────
+// ─── Shared UI primitives ─────────────────────────────────────────────────────
+
+const INPUT_CLASS =
+  "w-full border border-border bg-bg px-4 py-3 font-sans text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors";
+
+const MONO_INPUT_CLASS =
+  "w-full border border-border bg-bg px-4 py-3 font-mono text-xs text-fg placeholder:text-muted/30 focus:outline-none focus:border-fg/40 transition-colors resize-y";
 
 interface FieldLabelProps {
   htmlFor: string;
@@ -218,138 +151,100 @@ function FieldLabel({ htmlFor, required, optional, children }: FieldLabelProps) 
   );
 }
 
-const INPUT_CLASS =
-  "w-full border border-border bg-bg px-4 py-3 font-sans text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors";
-const MONO_INPUT_CLASS =
-  "w-full border border-border bg-bg px-4 py-3 font-mono text-xs text-fg placeholder:text-muted/30 focus:outline-none focus:border-fg/40 transition-colors resize-y";
-
-// ─── Shared fields used by all task types ─────────────────────────────────────
-
-interface SharedFields {
-  title: string;
-  description: string;
-  language: Language;
-  max_bounty_sats: string;
-  deadline_minutes: string;
+interface LanguagePickerProps {
+  value: Language;
+  onChange: (lang: Language) => void;
 }
 
-interface SharedFormFieldsProps {
-  values: SharedFields;
-  onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => void;
-}
-
-function SharedFormFields({ values, onChange }: SharedFormFieldsProps) {
+function LanguagePicker({ value, onChange }: LanguagePickerProps) {
   return (
-    <>
+    <fieldset>
+      <legend className="block text-xs font-mono text-muted tracking-widest uppercase mb-3">
+        Language <span className="text-danger">*</span>
+      </legend>
+      <div className="flex gap-3">
+        {(["typescript", "python"] as Language[]).map((lang) => (
+          <label
+            key={lang}
+            className={`flex items-center gap-3 border px-4 py-3 cursor-pointer transition-colors ${
+              value === lang
+                ? "border-fg/40 bg-fg/[0.04]"
+                : "border-border hover:border-fg/20"
+            }`}
+            aria-label={`Select ${lang}`}
+          >
+            <input
+              type="radio"
+              name="language"
+              value={lang}
+              checked={value === lang}
+              onChange={() => onChange(lang)}
+              className="sr-only"
+            />
+            <span
+              className={`w-3.5 h-3.5 border flex-shrink-0 flex items-center justify-center ${
+                value === lang ? "border-fg bg-fg" : "border-border"
+              }`}
+              aria-hidden="true"
+            >
+              {value === lang && <span className="w-1.5 h-1.5 bg-bg" />}
+            </span>
+            <span className="font-mono text-xs text-fg tracking-wider uppercase">{lang}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+interface BountyAmountDeadlineProps {
+  sats: string;
+  deadline: string;
+  onSatsChange: (v: string) => void;
+  onDeadlineChange: (v: string) => void;
+}
+
+function BountyAmountDeadline({
+  sats,
+  deadline,
+  onSatsChange,
+  onDeadlineChange,
+}: BountyAmountDeadlineProps) {
+  return (
+    <div className="grid grid-cols-2 gap-6">
       <div>
-        <FieldLabel htmlFor="title" required>Title</FieldLabel>
+        <FieldLabel htmlFor="max_bounty_sats">
+          Max Bounty <span className="text-accent normal-case tracking-normal">(sats)</span>
+        </FieldLabel>
         <input
-          id="title"
-          name="title"
-          type="text"
-          value={values.title}
-          onChange={onChange}
-          placeholder="e.g. Implement isPalindrome"
+          id="max_bounty_sats"
+          type="number"
+          value={sats}
+          onChange={(e) => onSatsChange(e.target.value)}
+          min={100}
+          step={100}
           required
-          className={INPUT_CLASS}
-          aria-label="Bounty title"
+          className="w-full border border-border bg-bg px-4 py-3 font-mono text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors"
+          aria-label="Maximum bounty in satoshis"
         />
       </div>
-
       <div>
-        <FieldLabel htmlFor="description">Description</FieldLabel>
-        <textarea
-          id="description"
-          name="description"
-          value={values.description}
-          onChange={onChange}
-          placeholder="What should be done? Any constraints or edge cases?"
-          rows={3}
-          className="w-full border border-border bg-bg px-4 py-3 font-sans text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors resize-none"
-          aria-label="Bounty description"
+        <FieldLabel htmlFor="deadline_minutes">
+          Deadline <span className="text-muted normal-case tracking-normal">(minutes)</span>
+        </FieldLabel>
+        <input
+          id="deadline_minutes"
+          type="number"
+          value={deadline}
+          onChange={(e) => onDeadlineChange(e.target.value)}
+          min={1}
+          max={60}
+          required
+          className="w-full border border-border bg-bg px-4 py-3 font-mono text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors"
+          aria-label="Deadline in minutes"
         />
       </div>
-
-      <div>
-        <fieldset>
-          <legend className="block text-xs font-mono text-muted tracking-widest uppercase mb-3">
-            Language <span className="text-danger">*</span>
-          </legend>
-          <div className="flex gap-3">
-            {(["typescript", "python"] as Language[]).map((lang) => (
-              <label
-                key={lang}
-                className={`flex items-center gap-3 border px-4 py-3 cursor-pointer transition-colors ${
-                  values.language === lang
-                    ? "border-fg/40 bg-fg/[0.04]"
-                    : "border-border hover:border-fg/20"
-                }`}
-                aria-label={`Select ${lang}`}
-              >
-                <input
-                  type="radio"
-                  name="language"
-                  value={lang}
-                  checked={values.language === lang}
-                  onChange={onChange}
-                  className="sr-only"
-                />
-                <span
-                  className={`w-3.5 h-3.5 border flex-shrink-0 flex items-center justify-center ${
-                    values.language === lang ? "border-fg bg-fg" : "border-border"
-                  }`}
-                  aria-hidden="true"
-                >
-                  {values.language === lang && (
-                    <span className="w-1.5 h-1.5 bg-bg" />
-                  )}
-                </span>
-                <span className="font-mono text-xs text-fg tracking-wider uppercase">
-                  {lang}
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-      </div>
-
-      <div className="grid grid-cols-2 gap-6">
-        <div>
-          <FieldLabel htmlFor="max_bounty_sats">
-            Max Bounty <span className="text-accent normal-case tracking-normal">(sats)</span>
-          </FieldLabel>
-          <input
-            id="max_bounty_sats"
-            name="max_bounty_sats"
-            type="number"
-            value={values.max_bounty_sats}
-            onChange={onChange}
-            min={100}
-            step={100}
-            required
-            className="w-full border border-border bg-bg px-4 py-3 font-mono text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors"
-            aria-label="Maximum bounty in satoshis"
-          />
-        </div>
-        <div>
-          <FieldLabel htmlFor="deadline_minutes">
-            Deadline <span className="text-muted normal-case tracking-normal">(minutes)</span>
-          </FieldLabel>
-          <input
-            id="deadline_minutes"
-            name="deadline_minutes"
-            type="number"
-            value={values.deadline_minutes}
-            onChange={onChange}
-            min={1}
-            max={60}
-            required
-            className="w-full border border-border bg-bg px-4 py-3 font-mono text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors"
-            aria-label="Deadline in minutes"
-          />
-        </div>
-      </div>
-    </>
+    </div>
   );
 }
 
@@ -357,21 +252,97 @@ function SharedFormFields({ values, onChange }: SharedFormFieldsProps) {
 
 export default function PostPage() {
   const router = useRouter();
-  const [taskType, setTaskType] = useState<TaskType>("snippet");
+  const [activeTab, setActiveTab] = useState<Tab>("from_issue");
 
-  // Per-type form states kept in sync independently
+  // Per-tab form states
+  const [fromIssueForm, setFromIssueForm] = useState<FromIssueFormState>(DEFAULT_FROM_ISSUE);
+  const [freeFormState, setFreeFormState] = useState<FreeFormState>(DEFAULT_FREE_FORM);
   const [snippetForm, setSnippetForm] = useState<SnippetFormState>(DEFAULT_SNIPPET_FORM);
-  const [codebaseForm, setCodebaseForm] = useState<CodebaseFormState>(DEFAULT_CODEBASE_FORM);
-  const [bugBountyForm, setBugBountyForm] = useState<BugBountyFormState>(DEFAULT_BUG_BOUNTY_FORM);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalData | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
 
-  // ─── Template fill ──────────────────────────────────────────────────────────
+  // File attachment ref for free-form
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ─── Issue selection: auto-fetch context ──────────────────────────────────
+
+  useEffect(() => {
+    if (!fromIssueForm.issue || !fromIssueForm.repo) return;
+
+    const issueNum = fromIssueForm.issue.number;
+    const repo = fromIssueForm.repo;
+
+    setFromIssueForm((prev) => ({
+      ...prev,
+      context_loading: true,
+      context_error: null,
+      context_files: [],
+    }));
+
+    fetch(
+      `/api/github/issue?repo=${encodeURIComponent(repo)}&issue_number=${issueNum}`
+    )
+      .then(async (res) => {
+        const data = await res.json() as IssueContext | { error: string };
+        if (!res.ok) {
+          setFromIssueForm((prev) => ({
+            ...prev,
+            context_loading: false,
+            context_error: (data as { error: string }).error ?? "Failed to fetch issue context",
+          }));
+          return;
+        }
+        const ctx = data as IssueContext;
+        setFromIssueForm((prev) => ({
+          ...prev,
+          context_loading: false,
+          context_files: ctx.context_files,
+          // Only auto-fill if blank — don't clobber user edits
+          title: prev.title || ctx.suggested_title,
+          description: prev.description || ctx.suggested_description,
+        }));
+      })
+      .catch((err) => {
+        setFromIssueForm((prev) => ({
+          ...prev,
+          context_loading: false,
+          context_error: err instanceof Error ? err.message : "Network error",
+        }));
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromIssueForm.issue?.number, fromIssueForm.repo]);
+
+  // ─── File attach handler (free-form tab) ──────────────────────────────────
+
+  function handleFileAttach(files: FileList | null) {
+    if (!files) return;
+    const readers = Array.from(files).slice(0, 10).map((file) => {
+      return new Promise<{ path: string; content: string }>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          resolve({
+            path: file.name,
+            content: reader.result as string,
+          });
+        };
+        reader.readAsText(file);
+      });
+    });
+    Promise.all(readers).then((newFiles) => {
+      setFreeFormState((prev) => ({
+        ...prev,
+        attached_files: [...prev.attached_files, ...newFiles],
+      }));
+    });
+  }
+
+  // ─── Template fill (snippet tab) ──────────────────────────────────────────
 
   function handleTemplateSelect(task: DemoTask) {
-    setTaskType("snippet");
+    setActiveTab("snippet");
     setSnippetForm({
       title: task.title,
       description: task.description,
@@ -384,42 +355,7 @@ export default function PostPage() {
     setError(null);
   }
 
-  function handleCodebaseTemplate() {
-    setTaskType("codebase");
-    setCodebaseForm(CODEBASE_TEMPLATE);
-    setError(null);
-  }
-
-  function handleBugBountyTemplate() {
-    setTaskType("bug_bounty");
-    setBugBountyForm(BUG_BOUNTY_TEMPLATE);
-    setError(null);
-  }
-
-  // ─── Change handlers ────────────────────────────────────────────────────────
-
-  function handleSnippetChange(
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-  ) {
-    const { name, value } = e.target;
-    setSnippetForm((prev) => ({ ...prev, [name]: value }));
-  }
-
-  function handleCodebaseChange(
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-  ) {
-    const { name, value } = e.target;
-    setCodebaseForm((prev) => ({ ...prev, [name]: value }));
-  }
-
-  function handleBugBountyChange(
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
-  ) {
-    const { name, value } = e.target;
-    setBugBountyForm((prev) => ({ ...prev, [name]: value }));
-  }
-
-  // ─── Submit ─────────────────────────────────────────────────────────────────
+  // ─── Submit handlers ───────────────────────────────────────────────────────
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -427,13 +363,126 @@ export default function PostPage() {
 
     let body: PostBountyRequest;
 
-    if (taskType === "snippet") {
+    if (activeTab === "from_issue") {
+      const { repo, issue, title, description, language, max_bounty_sats, deadline_minutes, context_files } =
+        fromIssueForm;
+      const maxSats = parseInt(max_bounty_sats, 10);
+      const deadlineMins = parseInt(deadline_minutes, 10);
+
+      if (!repo) { setError("Select a repository."); return; }
+      if (!issue) { setError("Select an issue."); return; }
+      if (!title.trim()) { setError("Title is required."); return; }
+      if (isNaN(maxSats) || maxSats < 100) { setError("Max bounty must be at least 100 sats."); return; }
+      if (isNaN(deadlineMins) || deadlineMins < 1) { setError("Deadline must be at least 1 minute."); return; }
+
+      const repoParts = repo.split("/");
+      const payload: CodebasePayload = {
+        codebase_id: `${repoParts[1] ?? "repo"}-issue-${issue.number}`,
+        context_files,
+        test_command: language === "python" ? "pytest" : "npm test",
+        task_description: description.trim() || title.trim(),
+      };
+
+      body = {
+        poster_pubkey: POSTER_PUBKEY,
+        title: title.trim(),
+        description: description.trim() || title.trim(),
+        language,
+        task_type: "codebase",
+        task_payload: payload,
+        test_suite: `# from-issue bounty — evaluation by auditor`,
+        max_bounty_sats: maxSats,
+        deadline_minutes: deadlineMins,
+        github_repo: repo,
+        github_issue_number: issue.number,
+        auditor_config: {
+          model: "claude-sonnet-4-6",
+          weights: {
+            code_quality: 0.9,
+            completeness: 0.9,
+            convention_match: 0.8,
+            test_appropriateness: 0.7,
+            maintainability: 0.7,
+            no_new_deps: 0.6,
+            security: 1.0,
+          },
+          threshold: 0.5,
+          max_extensions: 2,
+        },
+      };
+    } else if (activeTab === "free_form") {
+      const {
+        repo,
+        title,
+        body: bodyText,
+        acceptance_criteria,
+        language,
+        max_bounty_sats,
+        deadline_minutes,
+        evaluation_mode,
+        attached_files,
+      } = freeFormState;
+
+      const maxSats = parseInt(max_bounty_sats, 10);
+      const deadlineMins = parseInt(deadline_minutes, 10);
+
+      if (!title.trim()) { setError("Title is required."); return; }
+      if (!bodyText.trim()) { setError("Task description is required."); return; }
+      if (isNaN(maxSats) || maxSats < 100) { setError("Max bounty must be at least 100 sats."); return; }
+      if (isNaN(deadlineMins) || deadlineMins < 1) { setError("Deadline must be at least 1 minute."); return; }
+
+      const fullDescription = acceptance_criteria.trim()
+        ? `${bodyText.trim()}\n\n**Acceptance Criteria:**\n${acceptance_criteria.trim()}`
+        : bodyText.trim();
+
+      const payload: CodebasePayload = {
+        codebase_id: title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40),
+        context_files: attached_files,
+        test_command: language === "python" ? "pytest" : "npm test",
+        task_description: fullDescription,
+      };
+
+      const needsAuditor = evaluation_mode === "auditor_only" || !repo;
+
+      body = {
+        poster_pubkey: POSTER_PUBKEY,
+        title: title.trim(),
+        description: fullDescription,
+        language,
+        task_type: "codebase",
+        task_payload: payload,
+        test_suite: `# free-form task — ${evaluation_mode === "strict_tests" ? "tests in context" : "auditor review"}`,
+        max_bounty_sats: maxSats,
+        deadline_minutes: deadlineMins,
+        ...(repo ? { github_repo: repo } : {}),
+        ...(needsAuditor
+          ? {
+              auditor_config: {
+                model: "claude-sonnet-4-6",
+                weights: {
+                  code_quality: 0.9,
+                  completeness: 0.9,
+                  convention_match: 0.8,
+                  test_appropriateness: 0.7,
+                  maintainability: 0.7,
+                  no_new_deps: 0.6,
+                  security: 1.0,
+                },
+                threshold: 0.5,
+                max_extensions: 2,
+              },
+            }
+          : {}),
+      };
+    } else {
+      // snippet tab
       const maxSats = parseInt(snippetForm.max_bounty_sats, 10);
       const deadlineMins = parseInt(snippetForm.deadline_minutes, 10);
       if (!snippetForm.title.trim()) { setError("Title is required."); return; }
       if (!snippetForm.test_suite.trim()) { setError("Test suite is required."); return; }
       if (isNaN(maxSats) || maxSats < 100) { setError("Max bounty must be at least 100 sats."); return; }
       if (isNaN(deadlineMins) || deadlineMins < 1) { setError("Deadline must be at least 1 minute."); return; }
+
       body = {
         poster_pubkey: POSTER_PUBKEY,
         title: snippetForm.title.trim(),
@@ -442,71 +491,6 @@ export default function PostPage() {
         task_type: "snippet",
         starter_code: snippetForm.starter_code.trim() || undefined,
         test_suite: snippetForm.test_suite.trim(),
-        max_bounty_sats: maxSats,
-        deadline_minutes: deadlineMins,
-      };
-    } else if (taskType === "codebase") {
-      const maxSats = parseInt(codebaseForm.max_bounty_sats, 10);
-      const deadlineMins = parseInt(codebaseForm.deadline_minutes, 10);
-      if (!codebaseForm.title.trim()) { setError("Title is required."); return; }
-      if (!codebaseForm.test_command.trim()) { setError("Test command is required."); return; }
-      if (isNaN(maxSats) || maxSats < 100) { setError("Max bounty must be at least 100 sats."); return; }
-      if (isNaN(deadlineMins) || deadlineMins < 1) { setError("Deadline must be at least 1 minute."); return; }
-
-      let contextFiles: Array<{ path: string; content: string }> = [];
-      try {
-        contextFiles = JSON.parse(codebaseForm.context_files_json);
-        if (!Array.isArray(contextFiles)) throw new Error("not array");
-      } catch {
-        setError("Context files JSON is invalid. Expected an array of {path, content} objects.");
-        return;
-      }
-
-      const payload: CodebasePayload = {
-        codebase_id: codebaseForm.title.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-        context_files: contextFiles,
-        test_command: codebaseForm.test_command.trim(),
-        task_description: codebaseForm.task_description.trim(),
-      };
-
-      body = {
-        poster_pubkey: POSTER_PUBKEY,
-        title: codebaseForm.title.trim(),
-        description: codebaseForm.description.trim(),
-        language: codebaseForm.language,
-        task_type: "codebase",
-        task_payload: payload,
-        test_suite: `# codebase task — tests live in context; command: ${codebaseForm.test_command}`,
-        max_bounty_sats: maxSats,
-        deadline_minutes: deadlineMins,
-      };
-    } else {
-      // bug_bounty
-      const maxSats = parseInt(bugBountyForm.max_bounty_sats, 10);
-      const deadlineMins = parseInt(bugBountyForm.deadline_minutes, 10);
-      if (!bugBountyForm.title.trim()) { setError("Title is required."); return; }
-      if (!bugBountyForm.target_code.trim()) { setError("Target code is required."); return; }
-      if (!bugBountyForm.symptom.trim()) { setError("Symptom is required."); return; }
-      if (!bugBountyForm.hidden_test_suite.trim()) { setError("Hidden test suite is required."); return; }
-      if (isNaN(maxSats) || maxSats < 100) { setError("Max bounty must be at least 100 sats."); return; }
-      if (isNaN(deadlineMins) || deadlineMins < 1) { setError("Deadline must be at least 1 minute."); return; }
-
-      const payload: BugBountyPayload = {
-        target_code: bugBountyForm.target_code.trim(),
-        language: bugBountyForm.language,
-        symptom: bugBountyForm.symptom.trim(),
-        failing_input_example: bugBountyForm.failing_input_example.trim() || undefined,
-        hidden_test_suite: bugBountyForm.hidden_test_suite.trim(),
-      };
-
-      body = {
-        poster_pubkey: POSTER_PUBKEY,
-        title: bugBountyForm.title.trim(),
-        description: bugBountyForm.description.trim(),
-        language: bugBountyForm.language,
-        task_type: "bug_bounty",
-        task_payload: payload,
-        test_suite: `# bug bounty — hidden tests in payload`,
         max_bounty_sats: maxSats,
         deadline_minutes: deadlineMins,
       };
@@ -526,17 +510,17 @@ export default function PostPage() {
       }
 
       const data = (await res.json()) as PostBountyResponse;
-      const maxSats =
-        taskType === "snippet"
+      const amountSats =
+        activeTab === "snippet"
           ? parseInt(snippetForm.max_bounty_sats, 10)
-          : taskType === "codebase"
-          ? parseInt(codebaseForm.max_bounty_sats, 10)
-          : parseInt(bugBountyForm.max_bounty_sats, 10);
+          : activeTab === "free_form"
+          ? parseInt(freeFormState.max_bounty_sats, 10)
+          : parseInt(fromIssueForm.max_bounty_sats, 10);
 
       setModal({
         invoice: data.poster_stake_invoice,
         paymentHash: data.poster_stake_payment_hash,
-        amountSats: maxSats,
+        amountSats,
         bountyId: data.bounty_id,
       });
     } catch (err) {
@@ -559,30 +543,19 @@ export default function PostPage() {
   }, [modal]);
 
   function handleModalPaid() {
-    if (modal) {
-      router.push(`/bounty/${modal.bountyId}`);
-    }
+    if (modal) router.push(`/bounty/${modal.bountyId}`);
   }
 
-  // ─── Task type tab styles ────────────────────────────────────────────────────
+  // ─── Current tab's bounty amount for sidebar ──────────────────────────────
 
-  const TAB_TYPES: { type: TaskType; label: string; activeStyle: string }[] = [
-    {
-      type: "snippet",
-      label: "Snippet",
-      activeStyle: "border-fg/40 bg-fg/[0.04] text-fg",
-    },
-    {
-      type: "codebase",
-      label: "Codebase",
-      activeStyle: "border-accent/50 bg-accent/5 text-amber",
-    },
-    {
-      type: "bug_bounty",
-      label: "Bug Bounty",
-      activeStyle: "border-danger/40 bg-danger/5 text-danger",
-    },
-  ];
+  const currentSats =
+    activeTab === "snippet"
+      ? snippetForm.max_bounty_sats
+      : activeTab === "free_form"
+      ? freeFormState.max_bounty_sats
+      : fromIssueForm.max_bounty_sats;
+
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen bg-bg">
@@ -596,13 +569,22 @@ export default function PostPage() {
           >
             LIGHTNING BOUNTIES
           </Link>
-          <Link
-            href="/bounties"
-            className="text-xs font-mono text-muted hover:text-fg transition-colors"
-            aria-label="Browse active bounties"
-          >
-            Browse
-          </Link>
+          <div className="flex items-center gap-6">
+            <Link
+              href="/repos"
+              className="text-xs font-mono text-muted hover:text-fg transition-colors"
+              aria-label="View connected repositories"
+            >
+              Repos
+            </Link>
+            <Link
+              href="/bounties"
+              className="text-xs font-mono text-muted hover:text-fg transition-colors"
+              aria-label="Browse active bounties"
+            >
+              Browse
+            </Link>
+          </div>
         </div>
       </nav>
 
@@ -620,215 +602,431 @@ export default function PostPage() {
               Post a Bounty
             </h1>
             <p className="text-base text-muted leading-relaxed max-w-lg">
-              Define your task and test suite. Lock the payout via Lightning.
-              Agents will start bidding within seconds.
+              Define your task. Lock the payout via Lightning. Agents bid in parallel.
             </p>
           </div>
           <div className="col-span-5" />
         </div>
 
         <div className="grid grid-cols-12 gap-8">
-          {/* Form — left 8 cols */}
+          {/* Left — form */}
           <div className="col-span-8">
 
-            {/* ── Task type selector ── */}
+            {/* ── Tab selector ── */}
             <div className="mb-10">
               <div className="text-xs font-mono text-muted tracking-widest uppercase mb-4">
-                Task Type
+                Bounty Type
               </div>
               <div
-                className="flex gap-0 border border-border"
+                className="flex border border-border"
                 role="tablist"
-                aria-label="Task type"
+                aria-label="Bounty type"
               >
-                {TAB_TYPES.map(({ type, label, activeStyle }) => (
+                {TABS.map(({ id, label }, idx) => (
                   <button
-                    key={type}
+                    key={id}
                     type="button"
                     role="tab"
-                    aria-selected={taskType === type}
-                    aria-controls={`panel-${type}`}
-                    onClick={() => { setTaskType(type); setError(null); }}
-                    className={`flex-1 py-3 px-4 text-xs font-mono tracking-widest border-r border-border last:border-r-0 transition-colors ${
-                      taskType === type
-                        ? activeStyle
+                    aria-selected={activeTab === id}
+                    aria-controls={`panel-${id}`}
+                    onClick={() => { setActiveTab(id); setError(null); }}
+                    className={`flex-1 py-3 px-4 text-xs font-mono tracking-widest uppercase transition-colors ${
+                      idx < TABS.length - 1 ? "border-r border-border" : ""
+                    } ${
+                      activeTab === id
+                        ? id === "snippet"
+                          ? "border-b-0 bg-fg/[0.04] text-fg"
+                          : id === "from_issue"
+                          ? "bg-accent/[0.06] text-amber border-t-2 border-t-accent"
+                          : "bg-fg/[0.04] text-fg"
                         : "text-muted hover:text-fg"
                     }`}
                   >
-                    {label.toUpperCase()}
+                    {label}
+                    {id === "from_issue" && (
+                      <span className="ml-2 text-[9px] text-accent tracking-widest">PRIMARY</span>
+                    )}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* ── Templates ── */}
-            <div className="mb-10">
-              <div className="text-xs font-mono text-muted tracking-widest uppercase mb-4">
-                Use a Template
-              </div>
-              {taskType === "snippet" && (
-                <TemplateButtons onSelect={handleTemplateSelect} />
-              )}
-              {taskType === "codebase" && (
-                <button
-                  type="button"
-                  onClick={handleCodebaseTemplate}
-                  className="border border-border px-4 py-3 text-xs font-mono text-fg hover:border-fg/30 hover:bg-fg/[0.03] transition-colors text-left"
-                  aria-label="Use codebase template: Add dark mode to Todo app"
-                >
-                  <span className="text-muted/50 mr-2">→</span>
-                  Add dark mode to Todo app
-                </button>
-              )}
-              {taskType === "bug_bounty" && (
-                <button
-                  type="button"
-                  onClick={handleBugBountyTemplate}
-                  className="border border-border px-4 py-3 text-xs font-mono text-fg hover:border-danger/30 hover:bg-danger/[0.02] transition-colors text-left"
-                  aria-label="Use bug bounty template: Fix parseISODate"
-                >
-                  <span className="text-danger/50 mr-2">→</span>
-                  Fix parseISODate
-                </button>
-              )}
-            </div>
-
-            {/* Divider */}
-            <div className="flex items-center gap-4 mb-10">
-              <div className="flex-1 h-px bg-border" />
-              <span className="text-xs font-mono text-muted">or fill manually</span>
-              <div className="flex-1 h-px bg-border" />
-            </div>
-
-            {/* ── Snippet form ── */}
-            {taskType === "snippet" && (
+            {/* ══════════════════════════════════════════════════════════════
+                Tab 1 — From Issue
+            ══════════════════════════════════════════════════════════════ */}
+            {activeTab === "from_issue" && (
               <form
-                id="panel-snippet"
+                id="panel-from_issue"
                 role="tabpanel"
-                aria-labelledby="tab-snippet"
+                aria-label="From GitHub issue"
                 onSubmit={handleSubmit}
                 noValidate
               >
                 <div className="space-y-6">
-                  <SharedFormFields values={snippetForm} onChange={handleSnippetChange} />
+                  {/* Repo picker */}
+                  <RepoPicker
+                    value={fromIssueForm.repo}
+                    onChange={(repo) =>
+                      setFromIssueForm((prev) => ({
+                        ...prev,
+                        repo,
+                        issue: null,
+                        title: "",
+                        description: "",
+                        context_files: [],
+                        context_error: null,
+                      }))
+                    }
+                    label="Repository"
+                  />
 
-                  {/* Starter code */}
-                  <div>
-                    <FieldLabel htmlFor="starter_code" optional>
-                      Starter Code
-                    </FieldLabel>
-                    <textarea
-                      id="starter_code"
-                      name="starter_code"
-                      value={snippetForm.starter_code}
-                      onChange={handleSnippetChange}
-                      placeholder={`export function solution(): void {\n  // TODO\n}`}
-                      rows={6}
-                      className={MONO_INPUT_CLASS}
-                      aria-label="Optional starter code template"
-                    />
-                  </div>
+                  {/* Issue picker */}
+                  <IssuePicker
+                    repo={fromIssueForm.repo}
+                    value={fromIssueForm.issue?.number ?? null}
+                    onChange={(issue) =>
+                      setFromIssueForm((prev) => ({
+                        ...prev,
+                        issue,
+                        // Clear prev auto-fill so useEffect re-fills
+                        title: "",
+                        description: "",
+                        context_files: [],
+                        context_error: null,
+                      }))
+                    }
+                  />
 
-                  {/* Test suite */}
-                  <div>
-                    <FieldLabel htmlFor="test_suite" required>
-                      Test Suite
-                    </FieldLabel>
-                    <textarea
-                      id="test_suite"
-                      name="test_suite"
-                      value={snippetForm.test_suite}
-                      onChange={handleSnippetChange}
-                      placeholder={`describe('solution', () => {\n  test('basic case', () => {\n    expect(solution()).toBe(true);\n  });\n});`}
-                      rows={10}
-                      required
-                      className={MONO_INPUT_CLASS}
-                      aria-label="Test suite code"
-                    />
-                  </div>
-
-                  {error && (
-                    <div className="border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger font-mono" role="alert">
-                      {error}
+                  {/* Context extraction status */}
+                  {fromIssueForm.context_loading && (
+                    <div className="border border-border px-4 py-3 text-xs font-mono text-muted/60 animate-pulse">
+                      Extracting file context from issue…
+                    </div>
+                  )}
+                  {fromIssueForm.context_error && (
+                    <div
+                      className="border border-amber/30 bg-amber/[0.04] px-4 py-3 text-xs font-mono text-amber"
+                      role="alert"
+                    >
+                      Context extraction: {fromIssueForm.context_error}
+                    </div>
+                  )}
+                  {!fromIssueForm.context_loading && fromIssueForm.context_files.length > 0 && (
+                    <div className="border border-border bg-fg/[0.02] px-4 py-3">
+                      <div className="text-[10px] font-mono text-muted tracking-widest uppercase mb-2">
+                        Context Files ({fromIssueForm.context_files.length})
+                      </div>
+                      <div className="space-y-1">
+                        {fromIssueForm.context_files.map((f) => (
+                          <div key={f.path} className="flex items-center gap-2">
+                            <span className="w-1 h-1 bg-accent flex-shrink-0" aria-hidden="true" />
+                            <code className="font-mono text-xs text-fg">{f.path}</code>
+                            <span className="text-muted/40 text-[10px]">
+                              {f.content.length} chars
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
 
-                  <div className="pt-2">
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="w-full bg-fg text-bg py-4 font-display font-bold text-sm tracking-tight hover:bg-accent hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                      aria-label="Post bounty and open Lightning payment"
-                    >
-                      {submitting ? "Posting…" : "Post Snippet Bounty — Open Lightning Invoice"}
-                    </button>
-                  </div>
+                  {/* Divider + draft fields (shown once issue selected) */}
+                  {fromIssueForm.issue && (
+                    <>
+                      <div className="flex items-center gap-4">
+                        <div className="flex-1 h-px bg-border" />
+                        <span className="text-xs font-mono text-muted">bounty draft</span>
+                        <div className="flex-1 h-px bg-border" />
+                      </div>
+
+                      <div>
+                        <FieldLabel htmlFor="fi-title" required>Title</FieldLabel>
+                        <input
+                          id="fi-title"
+                          type="text"
+                          value={fromIssueForm.title}
+                          onChange={(e) =>
+                            setFromIssueForm((prev) => ({ ...prev, title: e.target.value }))
+                          }
+                          placeholder="e.g. Fix authentication race condition"
+                          required
+                          className={INPUT_CLASS}
+                          aria-label="Bounty title"
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <FieldLabel htmlFor="fi-description">Description</FieldLabel>
+                          <button
+                            type="button"
+                            onClick={() => setShowPreview((v) => !v)}
+                            className="text-[10px] font-mono text-muted/60 hover:text-muted transition-colors"
+                            aria-label={showPreview ? "Edit description" : "Preview markdown"}
+                          >
+                            {showPreview ? "← Edit" : "Preview ↗"}
+                          </button>
+                        </div>
+                        {showPreview ? (
+                          <div className="border border-border px-4 py-3 min-h-[120px]">
+                            <MarkdownPreview content={fromIssueForm.description} />
+                          </div>
+                        ) : (
+                          <textarea
+                            id="fi-description"
+                            value={fromIssueForm.description}
+                            onChange={(e) =>
+                              setFromIssueForm((prev) => ({
+                                ...prev,
+                                description: e.target.value,
+                              }))
+                            }
+                            placeholder="Task description (Markdown supported)"
+                            rows={5}
+                            className="w-full border border-border bg-bg px-4 py-3 font-sans text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors resize-none"
+                            aria-label="Bounty description"
+                          />
+                        )}
+                      </div>
+
+                      <LanguagePicker
+                        value={fromIssueForm.language}
+                        onChange={(lang) =>
+                          setFromIssueForm((prev) => ({ ...prev, language: lang }))
+                        }
+                      />
+
+                      <EvaluationModePicker
+                        value={fromIssueForm.evaluation_mode}
+                        onChange={(mode) =>
+                          setFromIssueForm((prev) => ({ ...prev, evaluation_mode: mode }))
+                        }
+                      />
+
+                      <BountyAmountDeadline
+                        sats={fromIssueForm.max_bounty_sats}
+                        deadline={fromIssueForm.deadline_minutes}
+                        onSatsChange={(v) =>
+                          setFromIssueForm((prev) => ({ ...prev, max_bounty_sats: v }))
+                        }
+                        onDeadlineChange={(v) =>
+                          setFromIssueForm((prev) => ({ ...prev, deadline_minutes: v }))
+                        }
+                      />
+
+                      {error && (
+                        <div
+                          className="border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger font-mono"
+                          role="alert"
+                        >
+                          {error}
+                        </div>
+                      )}
+
+                      <div className="pt-2">
+                        <button
+                          type="submit"
+                          disabled={submitting}
+                          className="w-full bg-fg text-bg py-4 font-display font-bold text-sm tracking-tight hover:bg-accent hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                          aria-label="Post bounty from issue"
+                        >
+                          {submitting ? "Posting…" : "Post Issue Bounty — Open Lightning Invoice"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {/* No issue selected yet — hint */}
+                  {!fromIssueForm.issue && fromIssueForm.repo && (
+                    <div className="border border-border/50 px-4 py-6 text-center">
+                      <p className="text-xs font-mono text-muted/60">
+                        Select an issue above to auto-fill the bounty draft
+                      </p>
+                    </div>
+                  )}
+
+                  {/* No repo — CTA */}
+                  {!fromIssueForm.repo && (
+                    <div className="border border-border px-6 py-8 text-center">
+                      <p className="text-sm text-muted mb-4">
+                        No GitHub account connected. Connect GitHub to pick issues from your repos.
+                      </p>
+                      <Link
+                        href="/repos/connect"
+                        className="inline-block border border-fg text-fg px-5 py-2.5 text-xs font-mono tracking-widest uppercase hover:bg-fg hover:text-bg transition-colors"
+                        aria-label="Connect GitHub"
+                      >
+                        Connect GitHub
+                      </Link>
+                    </div>
+                  )}
                 </div>
               </form>
             )}
 
-            {/* ── Codebase form ── */}
-            {taskType === "codebase" && (
+            {/* ══════════════════════════════════════════════════════════════
+                Tab 2 — Free-form
+            ══════════════════════════════════════════════════════════════ */}
+            {activeTab === "free_form" && (
               <form
-                id="panel-codebase"
+                id="panel-free_form"
                 role="tabpanel"
-                aria-labelledby="tab-codebase"
+                aria-label="Free-form task"
                 onSubmit={handleSubmit}
                 noValidate
               >
                 <div className="space-y-6">
-                  <SharedFormFields values={codebaseForm} onChange={handleCodebaseChange} />
+                  {/* Optional repo context */}
+                  <RepoPicker
+                    value={freeFormState.repo}
+                    onChange={(repo) => setFreeFormState((prev) => ({ ...prev, repo }))}
+                    optional
+                    label="Repository (optional)"
+                  />
 
                   <div>
-                    <FieldLabel htmlFor="task_description" required>
-                      Task Description
-                    </FieldLabel>
-                    <textarea
-                      id="task_description"
-                      name="task_description"
-                      value={codebaseForm.task_description}
-                      onChange={handleCodebaseChange}
-                      placeholder="Describe the specific change agents must make to the codebase"
-                      rows={3}
-                      className="w-full border border-border bg-bg px-4 py-3 font-sans text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors resize-none"
-                      aria-label="Task description for codebase task"
-                    />
-                  </div>
-
-                  <div>
-                    <FieldLabel htmlFor="test_command" required>
-                      Test Command
-                    </FieldLabel>
+                    <FieldLabel htmlFor="ff-title" required>Title</FieldLabel>
                     <input
-                      id="test_command"
-                      name="test_command"
+                      id="ff-title"
                       type="text"
-                      value={codebaseForm.test_command}
-                      onChange={handleCodebaseChange}
-                      placeholder="npm test"
+                      value={freeFormState.title}
+                      onChange={(e) => setFreeFormState((prev) => ({ ...prev, title: e.target.value }))}
+                      placeholder="e.g. Refactor authentication module"
+                      required
                       className={INPUT_CLASS}
-                      aria-label="Test command for codebase"
+                      aria-label="Free-form bounty title"
                     />
                   </div>
 
                   <div>
-                    <FieldLabel htmlFor="context_files_json" required>
-                      Context Files <span className="text-muted normal-case tracking-normal">(JSON array of {"{path, content}"})</span>
-                    </FieldLabel>
+                    <div className="flex items-center justify-between mb-2">
+                      <FieldLabel htmlFor="ff-body" required>Task Description</FieldLabel>
+                      <button
+                        type="button"
+                        onClick={() => setShowPreview((v) => !v)}
+                        className="text-[10px] font-mono text-muted/60 hover:text-muted transition-colors"
+                        aria-label={showPreview ? "Edit" : "Preview markdown"}
+                      >
+                        {showPreview ? "← Edit" : "Preview ↗"}
+                      </button>
+                    </div>
+                    {showPreview ? (
+                      <div className="border border-border px-4 py-3 min-h-[160px]">
+                        <MarkdownPreview content={freeFormState.body} />
+                      </div>
+                    ) : (
+                      <textarea
+                        id="ff-body"
+                        value={freeFormState.body}
+                        onChange={(e) => setFreeFormState((prev) => ({ ...prev, body: e.target.value }))}
+                        placeholder="Describe the task in detail. Markdown supported."
+                        rows={7}
+                        required
+                        className="w-full border border-border bg-bg px-4 py-3 font-sans text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors resize-y"
+                        aria-label="Task description"
+                      />
+                    )}
+                  </div>
+
+                  <div>
+                    <FieldLabel htmlFor="ff-acceptance" optional>Acceptance Criteria</FieldLabel>
                     <textarea
-                      id="context_files_json"
-                      name="context_files_json"
-                      value={codebaseForm.context_files_json}
-                      onChange={handleCodebaseChange}
-                      rows={12}
-                      className={MONO_INPUT_CLASS}
-                      aria-label="Context files JSON"
-                      placeholder={'[\n  { "path": "src/index.ts", "content": "// your file content here" }\n]'}
+                      id="ff-acceptance"
+                      value={freeFormState.acceptance_criteria}
+                      onChange={(e) =>
+                        setFreeFormState((prev) => ({
+                          ...prev,
+                          acceptance_criteria: e.target.value,
+                        }))
+                      }
+                      placeholder={`- All existing tests pass\n- New function is exported as named export\n- No new npm dependencies`}
+                      rows={4}
+                      className="w-full border border-border bg-bg px-4 py-3 font-sans text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors resize-none"
+                      aria-label="Acceptance criteria"
                     />
                   </div>
 
+                  {/* File attach */}
+                  <div>
+                    <FieldLabel htmlFor="ff-files" optional>Context Files</FieldLabel>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="border border-border px-4 py-2.5 text-xs font-mono text-muted hover:text-fg hover:border-fg/30 transition-colors"
+                        aria-label="Attach context files from your computer"
+                      >
+                        + Attach files
+                      </button>
+                      {freeFormState.attached_files.length > 0 && (
+                        <span className="text-xs font-mono text-muted">
+                          {freeFormState.attached_files.length} file(s) attached
+                        </span>
+                      )}
+                    </div>
+                    <input
+                      ref={fileInputRef}
+                      id="ff-files"
+                      type="file"
+                      multiple
+                      accept=".ts,.tsx,.js,.jsx,.py,.md,.json,.yaml,.yml,.toml,.css,.html"
+                      onChange={(e) => handleFileAttach(e.target.files)}
+                      className="sr-only"
+                      aria-label="File picker for context files"
+                    />
+                    {freeFormState.attached_files.length > 0 && (
+                      <div className="mt-2 border border-border bg-fg/[0.02] px-4 py-3 space-y-1">
+                        {freeFormState.attached_files.map((f, idx) => (
+                          <div key={idx} className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="w-1 h-1 bg-accent flex-shrink-0" aria-hidden="true" />
+                              <code className="font-mono text-xs text-fg truncate">{f.path}</code>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFreeFormState((prev) => ({
+                                  ...prev,
+                                  attached_files: prev.attached_files.filter((_, i) => i !== idx),
+                                }))
+                              }
+                              className="text-[10px] font-mono text-muted/40 hover:text-danger transition-colors flex-shrink-0"
+                              aria-label={`Remove file ${f.path}`}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <LanguagePicker
+                    value={freeFormState.language}
+                    onChange={(lang) => setFreeFormState((prev) => ({ ...prev, language: lang }))}
+                  />
+
+                  <EvaluationModePicker
+                    value={freeFormState.evaluation_mode}
+                    onChange={(mode) =>
+                      setFreeFormState((prev) => ({ ...prev, evaluation_mode: mode }))
+                    }
+                  />
+
+                  <BountyAmountDeadline
+                    sats={freeFormState.max_bounty_sats}
+                    deadline={freeFormState.deadline_minutes}
+                    onSatsChange={(v) => setFreeFormState((prev) => ({ ...prev, max_bounty_sats: v }))}
+                    onDeadlineChange={(v) =>
+                      setFreeFormState((prev) => ({ ...prev, deadline_minutes: v }))
+                    }
+                  />
+
                   {error && (
-                    <div className="border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger font-mono" role="alert">
+                    <div
+                      className="border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger font-mono"
+                      role="alert"
+                    >
                       {error}
                     </div>
                   )}
@@ -838,120 +1036,146 @@ export default function PostPage() {
                       type="submit"
                       disabled={submitting}
                       className="w-full bg-fg text-bg py-4 font-display font-bold text-sm tracking-tight hover:bg-accent hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                      aria-label="Post codebase bounty"
+                      aria-label="Post free-form bounty"
                     >
-                      {submitting ? "Posting…" : "Post Codebase Bounty — Open Lightning Invoice"}
+                      {submitting ? "Posting…" : "Post Free-form Bounty — Open Lightning Invoice"}
                     </button>
                   </div>
                 </div>
               </form>
             )}
 
-            {/* ── Bug Bounty form ── */}
-            {taskType === "bug_bounty" && (
-              <form
-                id="panel-bug_bounty"
-                role="tabpanel"
-                aria-labelledby="tab-bug_bounty"
-                onSubmit={handleSubmit}
-                noValidate
-              >
-                <div className="space-y-6">
-                  <SharedFormFields values={bugBountyForm} onChange={handleBugBountyChange} />
-
-                  <div>
-                    <FieldLabel htmlFor="symptom" required>
-                      Symptom
-                    </FieldLabel>
-                    <textarea
-                      id="symptom"
-                      name="symptom"
-                      value={bugBountyForm.symptom}
-                      onChange={handleBugBountyChange}
-                      placeholder="Describe the observed buggy behavior"
-                      rows={3}
-                      className="w-full border border-border bg-bg px-4 py-3 font-sans text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors resize-none"
-                      aria-label="Bug symptom description"
-                    />
+            {/* ══════════════════════════════════════════════════════════════
+                Tab 3 — Quick Snippet (legacy flow — preserved as-is)
+            ══════════════════════════════════════════════════════════════ */}
+            {activeTab === "snippet" && (
+              <div>
+                {/* Templates */}
+                <div className="mb-10">
+                  <div className="text-xs font-mono text-muted tracking-widest uppercase mb-4">
+                    Use a Template
                   </div>
-
-                  <div>
-                    <FieldLabel htmlFor="target_code" required>
-                      Target Code (buggy source)
-                    </FieldLabel>
-                    <textarea
-                      id="target_code"
-                      name="target_code"
-                      value={bugBountyForm.target_code}
-                      onChange={handleBugBountyChange}
-                      rows={10}
-                      className={MONO_INPUT_CLASS}
-                      aria-label="Target buggy code"
-                      placeholder="// Paste the buggy function or module here"
-                    />
-                  </div>
-
-                  <div>
-                    <FieldLabel htmlFor="failing_input_example" optional>
-                      Failing Input Example
-                    </FieldLabel>
-                    <textarea
-                      id="failing_input_example"
-                      name="failing_input_example"
-                      value={bugBountyForm.failing_input_example}
-                      onChange={handleBugBountyChange}
-                      rows={3}
-                      className={MONO_INPUT_CLASS}
-                      aria-label="Failing input example"
-                      placeholder="myFunction('some input') // expected X, got Y"
-                    />
-                  </div>
-
-                  <div>
-                    <FieldLabel htmlFor="hidden_test_suite" required>
-                      Hidden Test Suite
-                    </FieldLabel>
-                    <div className="mb-2 text-[10px] font-mono text-muted/60">
-                      Not shown to bidders — only revealed after settlement
-                    </div>
-                    <textarea
-                      id="hidden_test_suite"
-                      name="hidden_test_suite"
-                      value={bugBountyForm.hidden_test_suite}
-                      onChange={handleBugBountyChange}
-                      rows={10}
-                      required
-                      className={MONO_INPUT_CLASS}
-                      aria-label="Hidden test suite for bug bounty"
-                      placeholder={`describe('fix', () => {\n  test('regression', () => {\n    expect(myFn(input)).toBe(expected);\n  });\n});`}
-                    />
-                  </div>
-
-                  {error && (
-                    <div className="border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger font-mono" role="alert">
-                      {error}
-                    </div>
-                  )}
-
-                  <div className="pt-2">
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="w-full bg-danger text-bg py-4 font-display font-bold text-sm tracking-tight hover:bg-danger/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
-                      aria-label="Post bug bounty"
-                    >
-                      {submitting ? "Posting…" : "Post Bug Bounty — Open Lightning Invoice"}
-                    </button>
-                  </div>
+                  <TemplateButtons onSelect={handleTemplateSelect} />
                 </div>
-              </form>
+
+                <div className="flex items-center gap-4 mb-10">
+                  <div className="flex-1 h-px bg-border" />
+                  <span className="text-xs font-mono text-muted">or fill manually</span>
+                  <div className="flex-1 h-px bg-border" />
+                </div>
+
+                <form
+                  id="panel-snippet"
+                  role="tabpanel"
+                  aria-label="Quick snippet bounty"
+                  onSubmit={handleSubmit}
+                  noValidate
+                >
+                  <div className="space-y-6">
+                    <div>
+                      <FieldLabel htmlFor="sn-title" required>Title</FieldLabel>
+                      <input
+                        id="sn-title"
+                        name="title"
+                        type="text"
+                        value={snippetForm.title}
+                        onChange={(e) => setSnippetForm((prev) => ({ ...prev, title: e.target.value }))}
+                        placeholder="e.g. Implement isPalindrome"
+                        required
+                        className={INPUT_CLASS}
+                        aria-label="Snippet bounty title"
+                      />
+                    </div>
+
+                    <div>
+                      <FieldLabel htmlFor="sn-description">Description</FieldLabel>
+                      <textarea
+                        id="sn-description"
+                        value={snippetForm.description}
+                        onChange={(e) =>
+                          setSnippetForm((prev) => ({ ...prev, description: e.target.value }))
+                        }
+                        placeholder="What should be done? Any constraints or edge cases?"
+                        rows={3}
+                        className="w-full border border-border bg-bg px-4 py-3 font-sans text-sm text-fg placeholder:text-muted/40 focus:outline-none focus:border-fg/40 transition-colors resize-none"
+                        aria-label="Snippet description"
+                      />
+                    </div>
+
+                    <LanguagePicker
+                      value={snippetForm.language}
+                      onChange={(lang) => setSnippetForm((prev) => ({ ...prev, language: lang }))}
+                    />
+
+                    <div>
+                      <FieldLabel htmlFor="sn-starter" optional>Starter Code</FieldLabel>
+                      <textarea
+                        id="sn-starter"
+                        value={snippetForm.starter_code}
+                        onChange={(e) =>
+                          setSnippetForm((prev) => ({ ...prev, starter_code: e.target.value }))
+                        }
+                        placeholder={`export function solution(): void {\n  // TODO\n}`}
+                        rows={6}
+                        className={MONO_INPUT_CLASS}
+                        aria-label="Optional starter code template"
+                      />
+                    </div>
+
+                    <div>
+                      <FieldLabel htmlFor="sn-tests" required>Test Suite</FieldLabel>
+                      <textarea
+                        id="sn-tests"
+                        value={snippetForm.test_suite}
+                        onChange={(e) =>
+                          setSnippetForm((prev) => ({ ...prev, test_suite: e.target.value }))
+                        }
+                        placeholder={`describe('solution', () => {\n  test('basic case', () => {\n    expect(solution()).toBe(true);\n  });\n});`}
+                        rows={10}
+                        required
+                        className={MONO_INPUT_CLASS}
+                        aria-label="Test suite code"
+                      />
+                    </div>
+
+                    <BountyAmountDeadline
+                      sats={snippetForm.max_bounty_sats}
+                      deadline={snippetForm.deadline_minutes}
+                      onSatsChange={(v) => setSnippetForm((prev) => ({ ...prev, max_bounty_sats: v }))}
+                      onDeadlineChange={(v) =>
+                        setSnippetForm((prev) => ({ ...prev, deadline_minutes: v }))
+                      }
+                    />
+
+                    {error && (
+                      <div
+                        className="border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger font-mono"
+                        role="alert"
+                      >
+                        {error}
+                      </div>
+                    )}
+
+                    <div className="pt-2">
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        className="w-full bg-fg text-bg py-4 font-display font-bold text-sm tracking-tight hover:bg-accent hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                        aria-label="Post snippet bounty and open Lightning payment"
+                      >
+                        {submitting ? "Posting…" : "Post Snippet Bounty — Open Lightning Invoice"}
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
             )}
           </div>
 
-          {/* Sidebar — right 4 cols */}
+          {/* Right sidebar */}
           <div className="col-span-4">
             <div className="sticky top-8 space-y-6">
-              {/* Fee breakdown */}
+              {/* Cost breakdown */}
               <div className="border border-border p-6">
                 <div className="text-xs font-mono text-muted tracking-widest uppercase mb-5">
                   Cost Breakdown
@@ -961,19 +1185,17 @@ export default function PostPage() {
                     [
                       {
                         label: "Bounty stake (locked)",
-                        value:
-                          taskType === "snippet"
-                            ? snippetForm.max_bounty_sats || "—"
-                            : taskType === "codebase"
-                            ? codebaseForm.max_bounty_sats || "—"
-                            : bugBountyForm.max_bounty_sats || "—",
+                        value: currentSats || "—",
                         sub: "Refunded if no winner",
                       },
                       { label: "Posting fee", value: "1,000", sub: "Platform fee, non-refundable" },
                       { label: "Bid stake (per agent)", value: "100", sub: "Agents cover this" },
                     ] as Array<{ label: string; value: string; sub: string }>
                   ).map((item) => (
-                    <div key={item.label} className="flex items-start justify-between gap-4 py-2 border-b border-border last:border-b-0">
+                    <div
+                      key={item.label}
+                      className="flex items-start justify-between gap-4 py-2 border-b border-border last:border-b-0"
+                    >
                       <div>
                         <div className="text-xs font-mono text-fg">{item.label}</div>
                         <div className="text-[10px] text-muted mt-0.5">{item.sub}</div>
@@ -987,43 +1209,57 @@ export default function PostPage() {
                 </div>
               </div>
 
-              {/* How payment works */}
+              {/* Payment flow */}
               <div className="border border-border p-6">
                 <div className="text-xs font-mono text-muted tracking-widest uppercase mb-4">
                   Payment Flow
                 </div>
                 <div className="space-y-3 text-xs text-muted leading-relaxed">
                   <p>
-                    A Lightning hold-invoice locks your stake. Funds are not
-                    captured until you accept a winning bid.
+                    A Lightning hold-invoice locks your stake. Funds are not captured
+                    until you accept a winning bid.
                   </p>
                   <p>
-                    If no agent passes your tests before the deadline, the stake
-                    is automatically refunded.
+                    If no agent passes your tests before the deadline, the stake is
+                    automatically refunded.
                   </p>
                 </div>
               </div>
 
-              {/* Task type hint */}
-              {taskType === "codebase" && (
+              {/* Tab-specific hints */}
+              {activeTab === "from_issue" && (
                 <div className="border border-accent/20 bg-accent/[0.03] p-5">
                   <div className="text-[10px] font-mono text-amber tracking-widest uppercase mb-2">
-                    Codebase Task
+                    From Issue
                   </div>
                   <p className="text-xs text-muted leading-relaxed">
-                    Agents receive your context files and submit a unified diff.
-                    The diff is applied to your codebase and your test command runs to judge.
+                    Picks up the issue body and referenced files automatically.
+                    The auditor evaluates bids against your acceptance criteria.
                   </p>
                 </div>
               )}
-              {taskType === "bug_bounty" && (
-                <div className="border border-danger/20 bg-danger/[0.03] p-5">
-                  <div className="text-[10px] font-mono text-danger tracking-widest uppercase mb-2">
-                    Bug Bounty
+              {activeTab === "free_form" && (
+                <div className="border border-border bg-fg/[0.02] p-5">
+                  <div className="text-[10px] font-mono text-muted tracking-widest uppercase mb-2">
+                    Free-form
                   </div>
                   <p className="text-xs text-muted leading-relaxed">
-                    Agents see the buggy code and symptom, but not your hidden tests.
-                    They submit a diff that must pass your regression suite.
+                    No GitHub issue created. Bidders see your task description and
+                    attached files. Use{" "}
+                    <strong className="text-fg">Strict Tests</strong> if you have
+                    a deterministic test suite; <strong className="text-fg">Auditor</strong>{" "}
+                    for open-ended tasks.
+                  </p>
+                </div>
+              )}
+              {activeTab === "snippet" && (
+                <div className="border border-border bg-fg/[0.02] p-5">
+                  <div className="text-[10px] font-mono text-muted tracking-widest uppercase mb-2">
+                    Quick Snippet
+                  </div>
+                  <p className="text-xs text-muted leading-relaxed">
+                    No repo needed. Agents receive a function stub and must pass your
+                    Jest/pytest test suite. Ideal for algorithmic tasks.
                   </p>
                 </div>
               )}

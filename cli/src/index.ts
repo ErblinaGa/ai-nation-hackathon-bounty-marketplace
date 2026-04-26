@@ -2,12 +2,26 @@
 /**
  * [cli] lb — Lightning Bounty Marketplace CLI
  *
- * Commands:
+ * Poster commands:
  *   lb bounty "<task>" [--codebase <path>] [--max-sats N] ...
  *   lb gh-login
  *   lb gh-connect <owner/repo>
  *   lb gh-bounty <owner/repo>#<issue-number>
  *   lb gh-pr <bounty-id>
+ *   lb gh-merge <bounty-id>
+ *   lb gh-revert <bounty-id>
+ *   lb scan <owner/repo>
+ *
+ * Bidder commands (V4):
+ *   lb auth login / status / logout
+ *   lb bounties [--task-type ...] [--language ...] [--json]
+ *   lb watch [--json] [--filter-language ...] [--filter-min-sats N]
+ *   lb bid show <bounty-id> [--download <dir>]
+ *   lb bid test <bounty-id> <diff-file>
+ *   lb bid submit <bounty-id> <diff-file> [--auto-pay-stake]
+ *   lb bid status <bid-id> [--watch]
+ *   lb bids [--json] [--limit N]
+ *   lb wallet balance / history / receive <n> / send <pubkey> <n>
  */
 import { Command } from "commander";
 import { resolve } from "node:path";
@@ -16,6 +30,8 @@ import { extractContext } from "./context_extractor.js";
 
 // Load .env from the project root so ANTHROPIC_API_KEY etc. are available to context_extractor
 loadDotenv({ path: resolve(process.cwd(), ".env") });
+
+// Poster commands
 import { runGhLogin } from "./commands/gh_login.js";
 import { runGhConnect } from "./commands/gh_connect.js";
 import { runGhBounty } from "./commands/gh_bounty.js";
@@ -25,6 +41,31 @@ import type { MergeStrategy } from "./commands/gh_merge.js";
 import { runGhRevert } from "./commands/gh_revert.js";
 import { runScan_command } from "./commands/scan.js";
 import type { ScanOpts } from "./commands/scan.js";
+
+// Bidder commands (V4)
+import { runAuthLogin } from "./commands/auth_login.js";
+import { runAuthStatus } from "./commands/auth_status.js";
+import { runAuthLogout } from "./commands/auth_logout.js";
+import { runBounties } from "./commands/bounties.js";
+import type { BountiesOpts } from "./commands/bounties.js";
+import { runWatch } from "./commands/watch.js";
+import type { WatchOpts } from "./commands/watch.js";
+import { runBidShow } from "./commands/bid_show.js";
+import type { BidShowOpts } from "./commands/bid_show.js";
+import { runBidTest } from "./commands/bid_test.js";
+import type { BidTestOpts } from "./commands/bid_test.js";
+import { runBidSubmit } from "./commands/bid_submit.js";
+import type { BidSubmitOpts } from "./commands/bid_submit.js";
+import { runBidStatus } from "./commands/bid_status.js";
+import type { BidStatusOpts } from "./commands/bid_status.js";
+import { runBids } from "./commands/bids.js";
+import type { BidsOpts } from "./commands/bids.js";
+import {
+  runWalletBalance,
+  runWalletHistory,
+  runWalletReceive,
+  runWalletSend,
+} from "./commands/wallet.js";
 
 const DEMO_POSTER_PUBKEY = "02demo_poster_pubkey";
 const DEFAULT_API_BASE = "http://localhost:3000/api";
@@ -487,6 +528,232 @@ program
       if (err instanceof Error && err.stack) {
         console.error(err.stack);
       }
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// auth commands (V4)
+// ---------------------------------------------------------------------------
+
+const authCmd = program
+  .command("auth")
+  .description("Authenticate with the Lightning Bounty Marketplace.");
+
+authCmd
+  .command("login")
+  .description("Log in via magic link OTP. Stores API key in ~/.lb/config.json.")
+  .option("--api <url>", "API base URL")
+  .action(async () => {
+    try {
+      await runAuthLogin();
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+authCmd
+  .command("status")
+  .description("Show current authentication status.")
+  .option("--api <url>", "API base URL")
+  .action(async () => {
+    try {
+      await runAuthStatus();
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+authCmd
+  .command("logout")
+  .description("Remove stored credentials (deletes ~/.lb/config.json).")
+  .action(() => {
+    runAuthLogout();
+  });
+
+// ---------------------------------------------------------------------------
+// bounties command (V4)
+// ---------------------------------------------------------------------------
+
+program
+  .command("bounties")
+  .description("List open bounties.")
+  .option("--task-type <type>", "Filter by type: snippet|codebase|bug_bounty|free_form")
+  .option("--language <lang>", "Filter by language: ts|python")
+  .option("--json", "Output NDJSON (one bounty per line, for piping into scripts)")
+  .option("--api <url>", "API base URL")
+  .action(async (opts: BountiesOpts & { api?: string; taskType?: string; language?: string; json?: boolean }) => {
+    try {
+      await runBounties(opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// watch command (V4)
+// ---------------------------------------------------------------------------
+
+program
+  .command("watch")
+  .description("Long-poll for new bounties, print as they appear. Agent daemon mode.")
+  .option("--json", "Output NDJSON (stream-clean, for piping into agent scripts)")
+  .option("--filter-language <lang>", "Only show ts|python bounties")
+  .option("--filter-min-sats <n>", "Only show bounties >= N sats")
+  .option("--interval <ms>", "Poll interval in milliseconds (default: 4000)")
+  .option("--api <url>", "API base URL")
+  .action(async (opts: WatchOpts) => {
+    try {
+      await runWatch(opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// bid commands (V4)
+// ---------------------------------------------------------------------------
+
+const bidCmd = program
+  .command("bid")
+  .description("Bidder workflow: inspect, test, submit, and track bids.");
+
+bidCmd
+  .command("show <bounty-id>")
+  .description("Show full bounty details including context_files.")
+  .option("--download <dir>", "Download context_files to this directory for local work")
+  .option("--api <url>", "API base URL")
+  .action(async (bountyId: string, opts: BidShowOpts) => {
+    try {
+      await runBidShow(bountyId, opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+bidCmd
+  .command("test <bounty-id> <diff-file>")
+  .description("Run the sandbox locally. Does NOT submit — purely a pre-flight check.")
+  .option("--api <url>", "API base URL")
+  .action(async (bountyId: string, diffFile: string, opts: BidTestOpts) => {
+    try {
+      await runBidTest(bountyId, diffFile, opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof Error && err.stack) console.error(err.stack);
+      process.exit(1);
+    }
+  });
+
+bidCmd
+  .command("submit <bounty-id> <diff-file>")
+  .description("Submit a bid (unified diff). Uses x-api-key from ~/.lb/config.json.")
+  .option("--auto-pay-stake", "Debit stake from ledger automatically on submit", false)
+  .option("--api <url>", "API base URL")
+  .action(async (bountyId: string, diffFile: string, opts: BidSubmitOpts & { autoPayStake?: boolean }) => {
+    try {
+      await runBidSubmit(bountyId, diffFile, opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+bidCmd
+  .command("status <bid-id>")
+  .description("Check bid status. Use --watch to poll until terminal state.")
+  .option("--watch", "Keep polling until PASS/FAIL/WON/LOST/REFUNDED")
+  .option("--api <url>", "API base URL")
+  .action(async (bidId: string, opts: BidStatusOpts) => {
+    try {
+      await runBidStatus(bidId, opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// bids command (V4)
+// ---------------------------------------------------------------------------
+
+program
+  .command("bids")
+  .description("List your bid history.")
+  .option("--json", "Output NDJSON")
+  .option("--limit <n>", "Max bids to return (default: 50)")
+  .option("--api <url>", "API base URL")
+  .action(async (opts: BidsOpts) => {
+    try {
+      await runBids(opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// wallet commands (V4)
+// ---------------------------------------------------------------------------
+
+const walletCmd = program
+  .command("wallet")
+  .description("Manage your marketplace wallet.");
+
+walletCmd
+  .command("balance")
+  .description("Show available and locked sats.")
+  .option("--api <url>", "API base URL")
+  .action(async (opts: { api?: string }) => {
+    try {
+      await runWalletBalance(opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+walletCmd
+  .command("history")
+  .description("Show last N transactions.")
+  .option("--limit <n>", "Max transactions (default: 20)")
+  .option("--api <url>", "API base URL")
+  .action(async (opts: { limit?: string; api?: string }) => {
+    try {
+      await runWalletHistory(opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+walletCmd
+  .command("receive <amount>")
+  .description("Generate a top-up invoice for <amount> sats. In stub mode, credits instantly.")
+  .option("--api <url>", "API base URL")
+  .action(async (amount: string, opts: { api?: string }) => {
+    try {
+      await runWalletReceive(amount, opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+walletCmd
+  .command("send <pubkey> <amount>")
+  .description("Send sats to another marketplace participant by pubkey.")
+  .option("--api <url>", "API base URL")
+  .action(async (pubkey: string, amount: string, opts: { api?: string }) => {
+    try {
+      await runWalletSend(pubkey, amount, opts);
+    } catch (err) {
+      console.error(`[cli] Error: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
   });

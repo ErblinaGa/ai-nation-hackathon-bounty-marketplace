@@ -6,6 +6,7 @@ import { getLightningClient } from "@/lib/lightning";
 import { sha256 } from "@/lib/hash";
 import { computePreview } from "@/lib/preview";
 import { ensureJobsRunning } from "@/lib/jobs";
+import { resolveUserFromApiKey } from "@/lib/auth";
 import type { SubmitBidRequest, SubmitBidResponse } from "@/lib/types";
 
 export async function POST(
@@ -32,9 +33,17 @@ export async function POST(
     );
   }
 
+  // CLI bidders authenticate via x-api-key — resolve their pubkey from the key
+  // and override any value in the body. This guarantees wallet crediting on win
+  // points to the actual user, not a sentinel like "from_api_key".
+  const apiUser = await resolveUserFromApiKey(req);
+  if (apiUser?.lightning_pubkey) {
+    body.bidder_pubkey = apiUser.lightning_pubkey;
+  }
+
   if (!body.bidder_pubkey?.trim()) {
     return NextResponse.json(
-      { success: false, error: "bidder_pubkey is required" },
+      { success: false, error: "bidder_pubkey is required (or send x-api-key)" },
       { status: 400 }
     );
   }

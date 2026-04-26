@@ -1,9 +1,10 @@
 // GET   /api/bounty/:id — bounty detail with public bid list
 // PATCH /api/bounty/:id — update mutable fields (github_pr_url; poster only)
 // Code field is NEVER included unless caller is the winning bidder (checked via x-pubkey)
+export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { getPubkeyFromRequest } from "@/lib/auth";
+import { getPubkeyFromRequest, getCurrentUser } from "@/lib/auth";
 import { ensureJobsRunning } from "@/lib/jobs";
 import type { BountyDetail, PublicBid } from "@/lib/types";
 
@@ -183,7 +184,7 @@ export async function GET(
 // ---------------------------------------------------------------------------
 // PATCH /api/bounty/:id — update mutable fields
 // Currently supports: github_pr_url
-// Auth: x-pubkey must match poster_pubkey
+// Auth: x-pubkey must match poster_pubkey OR session user must be the poster
 // ---------------------------------------------------------------------------
 
 export async function PATCH(
@@ -198,7 +199,19 @@ export async function PATCH(
     );
   }
 
-  const callerPubkey = getPubkeyFromRequest(req);
+  // Accept auth from either x-pubkey header (legacy/CLI) or Supabase session
+  let callerPubkey = getPubkeyFromRequest(req);
+
+  if (!callerPubkey && process.env.USE_SUPABASE === "true") {
+    try {
+      const user = await getCurrentUser();
+      if (user?.lightning_pubkey) {
+        callerPubkey = user.lightning_pubkey;
+      }
+    } catch {
+      // Fall through — auth check below will handle missing pubkey
+    }
+  }
 
   let body: { github_pr_url?: string; merged_at?: string; reverted_at?: string; revert_pr_url?: string };
   try {

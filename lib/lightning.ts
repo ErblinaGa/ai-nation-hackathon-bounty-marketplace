@@ -29,12 +29,14 @@ async function ensureWallet(
   const seed = seedSats !== undefined ? seedSats : defaultSeedSats(pubkey);
 
   // INSERT OR IGNORE — no-op if pubkey already exists.
-  const result = db
-    .prepare(
-      `INSERT OR IGNORE INTO wallets (pubkey, balance_sats, locked_sats, label)
-       VALUES (?, ?, 0, ?)`
-    )
-    .run(pubkey, seed, label ?? null);
+  const result = await Promise.resolve(
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO wallets (pubkey, balance_sats, locked_sats, label)
+         VALUES (?, ?, 0, ?)`
+      )
+      .run(pubkey, seed, label ?? null)
+  );
 
   // Only insert SEED tx when a fresh row was actually created and seed > 0.
   if (result.changes > 0 && seed > 0) {

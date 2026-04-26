@@ -1,19 +1,23 @@
 // POST /api/bounty — create a new bounty, issue poster stake hold-invoice
+export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
 import { getLightningClient } from "@/lib/lightning";
 import { sha256 } from "@/lib/hash";
 import { ensureJobsRunning } from "@/lib/jobs";
+import { getCurrentUser, ensureLightningPubkey } from "@/lib/auth";
 import type {
   PostBountyRequest,
   PostBountyResponse,
   TaskType,
+  EvaluationMode,
   CodebasePayload,
   BugBountyPayload,
 } from "@/lib/types";
 
 const VALID_TASK_TYPES: TaskType[] = ["snippet", "codebase", "bug_bounty"];
+const VALID_EVALUATION_MODES: EvaluationMode[] = ["strict_tests", "auditor_review_only"];
 
 // Basic shape check — not deep validation, just enough to catch obvious errors.
 function validatePayload(
@@ -60,6 +64,30 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Supabase mode: resolve poster identity from session; override poster_pubkey if needed
+  let posterUserId: string | null = null;
+  if (process.env.USE_SUPABASE === "true") {
+    try {
+      const user = await getCurrentUser();
+      if (!user) {
+        return NextResponse.json(
+          { success: false, error: "Unauthorized — sign in to post a bounty" },
+          { status: 401 }
+        );
+      }
+      posterUserId = user.id;
+      // Use session user's pubkey; generate + persist if not set yet
+      const pubkey = await ensureLightningPubkey(user.id);
+      body = { ...body, poster_pubkey: pubkey };
+    } catch (err) {
+      console.error("[POST /api/bounty] auth error:", err);
+      return NextResponse.json(
+        { success: false, error: "Auth check failed" },
+        { status: 500 }
+      );
+    }
+  }
+
   // Input validation
   if (!body.poster_pubkey?.trim()) {
     return NextResponse.json(
@@ -90,6 +118,14 @@ export async function POST(req: NextRequest) {
   if (!VALID_TASK_TYPES.includes(taskType)) {
     return NextResponse.json(
       { success: false, error: `task_type must be one of: ${VALID_TASK_TYPES.join(", ")}` },
+      { status: 400 }
+    );
+  }
+
+  const evaluationMode: EvaluationMode = body.evaluation_mode ?? "strict_tests";
+  if (!VALID_EVALUATION_MODES.includes(evaluationMode)) {
+    return NextResponse.json(
+      { success: false, error: `evaluation_mode must be one of: ${VALID_EVALUATION_MODES.join(", ")}` },
       { status: 400 }
     );
   }
@@ -168,12 +204,12 @@ export async function POST(req: NextRequest) {
     const db = getDb();
     db.prepare(
       `INSERT INTO bounties
-        (id, poster_pubkey, title, description, language, task_type, task_payload,
+        (id, poster_pubkey, title, description, language, task_type, evaluation_mode, task_payload,
          starter_code, test_suite, test_suite_hash, max_bounty_sats, bid_stake_sats,
          posting_fee_sats, poster_stake_invoice, poster_stake_payment_hash,
          deadline_at, status,
          github_repo, github_issue_number, github_commit_sha, auditor_config)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       bountyId,
       body.poster_pubkey,
@@ -181,6 +217,7 @@ export async function POST(req: NextRequest) {
       body.description,
       body.language,
       taskType,
+      evaluationMode,
       taskPayloadJson,
       body.starter_code ?? null,
       body.test_suite,

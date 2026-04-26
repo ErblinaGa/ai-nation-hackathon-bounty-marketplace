@@ -1,25 +1,57 @@
 // POST /api/repos — register a GitHub repo connection
 // GET  /api/repos — list all connected repos
+export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { getDb } from "@/lib/db";
+import { getCurrentUser } from "@/lib/auth";
 import type { RepoConnection } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
-// GET — list all connected repos
+// GET — list connected repos (filtered by session user when USE_SUPABASE=true)
 // ---------------------------------------------------------------------------
 
 export async function GET(_req: NextRequest) {
+  // In Supabase mode, only return repos for the current user.
+  // In SQLite mode, return all repos (single-tenant demo).
+  let userFilter: string | null = null;
+  if (process.env.USE_SUPABASE === "true") {
+    try {
+      const user = await getCurrentUser();
+      if (user) {
+        userFilter = user.github_username ?? user.email ?? null;
+      }
+      // If no session, still return public list (read-only viewing is allowed)
+    } catch {
+      // Fall through — return all
+    }
+  }
+
   try {
     const db = getDb();
-    const rows = db
-      .prepare(
-        `SELECT id, owner, repo, github_username, default_branch, description, connected_at
-         FROM repo_connections
-         ORDER BY connected_at DESC`,
-      )
-      .all() as Array<{
+
+    // When a user filter is present, return only their repos.
+    // The github_username column on repo_connections holds the connecting user's GH handle.
+    // Fall back to all if no filter (demo mode / no github_username).
+    const rows = (
+      userFilter
+        ? db
+            .prepare(
+              `SELECT id, owner, repo, github_username, default_branch, description, connected_at
+               FROM repo_connections
+               WHERE github_username = ?
+               ORDER BY connected_at DESC`,
+            )
+            .all(userFilter)
+        : db
+            .prepare(
+              `SELECT id, owner, repo, github_username, default_branch, description, connected_at
+               FROM repo_connections
+               ORDER BY connected_at DESC`,
+            )
+            .all()
+    ) as Array<{
       id: string;
       owner: string;
       repo: string;
