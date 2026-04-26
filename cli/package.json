@@ -1,0 +1,25 @@
+{
+  "name": "@lightning-bounties/cli",
+  "version": "0.1.0",
+  "description": "CLI tool for posting bounties to the Lightning Bounty Marketplace",
+  "type": "module",
+  "bin": {
+    "lb": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.0",
+    "commander": "^12.0.0",
+    "dotenv": "^17.4.2",
+    "glob": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

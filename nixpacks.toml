@@ -1,0 +1,13 @@
+# Railway/Nixpacks build config
+# Includes git, patch, python, etc. needed for the sandbox runner.
+[phases.setup]
+nixPkgs = ["nodejs_22", "python3", "git", "gnupatch"]
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"

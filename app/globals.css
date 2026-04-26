@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #FAFAF8;
+  --color-fg: #1A1A1A;
+  --color-muted: #737373;
+  --color-border: #E5E5E5;
+  --color-accent: #F2A900;
+  --color-success: #2D7A2D;
+  --color-danger: #C73838;
+  --color-amber: #C68A00;
+}
+
+html, body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-inter), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-fg);
+}
+
+/* Bauhaus-inspired grid system: hard lines, no shadows, no rounded corners by default */
+.grid-line {
+  background-image: linear-gradient(to right, var(--color-border) 1px, transparent 1px),
+                    linear-gradient(to bottom, var(--color-border) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.text-balance {
+  text-wrap: balance;
+}
