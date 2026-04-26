@@ -304,16 +304,19 @@ export default function BountyDetailPage() {
               </p>
             )}
 
-            {/* ── REVERTED badge ── */}
+            {/* ── REVERTED badge — user-triggered, never automatic ── */}
             {bounty.reverted_at && (
               <div className="mb-6 border border-danger/30 bg-danger/[0.03] px-5 py-4 flex items-center justify-between gap-4">
                 <div>
                   <div className="text-[10px] font-mono text-danger tracking-widest uppercase mb-1">
-                    REVERTED
+                    REVERTED BY POSTER
                   </div>
                   <span className="font-mono text-sm text-fg/70">
-                    Changes were reverted at {new Date(bounty.reverted_at).toLocaleString()}
+                    You reverted this on {new Date(bounty.reverted_at).toLocaleString()} via the Revert button or <code className="px-1 bg-fg/5">lb gh-revert</code>
                   </span>
+                  <div className="mt-1 font-mono text-[10px] text-muted/70">
+                    The system never auto-reverts merged bounties — reverts are always user-initiated.
+                  </div>
                 </div>
                 {bounty.revert_pr_url && (
                   <a

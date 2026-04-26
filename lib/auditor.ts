@@ -258,7 +258,18 @@ export async function runAuditor(bountyId: string): Promise<AuditorResult> {
     };
   }
 
-  const { weights, threshold = 0.5, max_extensions = 2, model } = auditorConfig;
+  // V3.1 RESCUE: if locked weights have NO V3 keys (i.e. it's a stale V2 config),
+  // override with current defaults. Otherwise scoring collapses because the LLM
+  // returns V3 per_criterion keys but the iterator only sees V2 keys → all 0s.
+  let { weights, threshold = 0.5, max_extensions = 2, model } = auditorConfig;
+  const v3Keys = ["code_quality", "completeness", "test_appropriateness", "maintainability"];
+  const hasAnyV3Key = v3Keys.some((k) => k in weights);
+  if (!hasAnyV3Key) {
+    console.warn(
+      `[auditor][runAuditor] bounty ${bountyId} has stale V2 weights — rescuing with V3 defaults`
+    );
+    weights = defaultWeights;
+  }
 
   // --- 2. Load PASS bids ---
   // V3: order by submitted_at ASC so ties (within 0.02 of top score) resolve to earliest submitter.

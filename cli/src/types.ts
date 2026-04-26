@@ -4,12 +4,13 @@
  */
 
 export interface AuditorWeights {
-  diff_size: number;
+  code_quality: number;          // V3
+  completeness: number;          // V3
   convention_match: number;
+  test_appropriateness: number;  // V3 (renamed from test_coverage)
+  maintainability: number;       // V3
   no_new_deps: number;
   security: number;
-  price: number;
-  bidder_track_record: number;
 }
 
 export interface AuditorConfig {

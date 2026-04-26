@@ -26,16 +26,18 @@ const DEMO_POSTER_PUBKEY = "02demo_poster_pubkey";
 const DEFAULT_MAX_SATS = 5000;
 const DEFAULT_DEADLINE_MIN = 10;
 
-// Default auditor weights from spec
+// V3 default auditor weights — quality-only, no price.
+// MUST match lib/auditor.ts defaults — locked at posting time.
 const DEFAULT_AUDITOR_CONFIG: AuditorConfig = {
   model: "claude-sonnet-4-6",
   weights: {
-    diff_size: 0.6,
+    code_quality: 0.9,
+    completeness: 0.9,
     convention_match: 0.8,
-    no_new_deps: 0.7,
+    test_appropriateness: 0.7,
+    maintainability: 0.7,
+    no_new_deps: 0.6,
     security: 1.0,
-    price: 0.5,
-    bidder_track_record: 0.4,
   },
   threshold: 0.5,
   max_extensions: 2,

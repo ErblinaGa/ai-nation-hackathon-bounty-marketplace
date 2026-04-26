@@ -45,6 +45,52 @@ If the scanner runs twice for the same scan_id (network retry), `INSERT OR IGNOR
 prevents primary-key violations. The candidate IDs are deterministic (scan_id + idx),
 so duplicates are exact.
 
+## Session: Project Tracker Demo Codebase (2026-04-25)
+
+### File count spec says 50-75 but realistic implementation lands at ~100
+
+The spec tree listed ~60 paths but a working Next.js app requires: config files
+(package.json, tsconfig, next.config.mjs, tailwind.config.ts, postcss.config.mjs,
+vitest.config.ts, vitest.setup.ts), auto-generated next-env.d.ts, .gitignore, README.md.
+Config + generated overhead = ~10 files before a single line of app code. Combined with
+tests (15 files spec'd), the ceiling hits fast. For future reference: 50-75 means
+~35-60 TypeScript source files when config overhead is excluded.
+
+### localStorage CRUD with SSR-compat: isBrowser() guard is non-negotiable
+
+Next.js server-renders pages during `npm run build`. Any localStorage call without a
+`typeof window !== "undefined"` check causes a build-time ReferenceError. Pattern used:
+`function isBrowser(): boolean { return typeof window !== "undefined" && typeof localStorage !== "undefined"; }`
+This needs to be in every storage module, not just a top-level check.
+
+### vitest.setup.ts localStorage mock: use getter for `length` property
+
+`get length() { return Object.keys(store).length; }` — defining `length` as a regular
+property (`length: 0`) breaks tests that add items and check count. Getter ensures
+it reflects current state.
+
+### Next.js App Router dynamic segments need `useParams<{id: string}>()` not `params` prop
+
+In client components (`"use client"`), params come from `useParams()` hook, not the
+function argument. Server components get `params` as a prop. Mixing them causes TypeScript
+errors or silent undefined values.
+
+### Cookie-based session for SSR: encode the JSON before setting document.cookie
+
+`encodeURIComponent(JSON.stringify(session))` when setting, `decodeURIComponent` when
+reading. Raw JSON contains characters that break cookie parsing (quotes, spaces).
+
+### CSS-only bar charts: items need `items-end` + percentage height on the bar div
+
+The bar div must be `position: relative` with `items-end flex` parent to make percentage
+heights work as visual bars. Set `min-height: 4px` so zero-value bars still show a tick.
+
+### Stagger animation on list items: use `.stagger > *:nth-child(n)` with animation-delay
+
+Avoids framer-motion dependency entirely. Put `animation: fade-in-up 0.35s ease-out both`
+on children and override `animation-delay` per `:nth-child`. Covers up to 6 items;
+extras animate together — acceptable.
+
 
 
 ## Session: V3 Diff Normalization + Demo Runbook (2026-04-25)

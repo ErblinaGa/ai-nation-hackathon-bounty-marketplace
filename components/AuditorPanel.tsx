@@ -201,7 +201,7 @@ function WinnerState({ bounty }: { bounty: BountyDetail }) {
           ))}
         </div>
         <div className="mt-2 text-[10px] font-mono text-muted/60">
-          Audited {new Date(result.audited_at).toLocaleString()} · Model: {result.model_used}
+          Audited {new Date(result.audited_at).toLocaleString()}
         </div>
       </div>
     </div>

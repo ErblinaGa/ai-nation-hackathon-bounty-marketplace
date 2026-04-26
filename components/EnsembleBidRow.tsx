@@ -140,23 +140,6 @@ export default function EnsembleBidRow({
           </div>
         </div>
 
-        {/* Ensemble candidates row */}
-        <div className="mt-2.5 ml-[152px] flex items-center gap-2 flex-wrap">
-          {meta.candidates.map((c, i) => (
-            <CandidatePill
-              key={i}
-              model={c.model}
-              passed={c.passed_internal_tests}
-              runtime_ms={c.runtime_ms}
-              chosen={c.chosen}
-            />
-          ))}
-          {meta.selection_reason && (
-            <span className="ml-1 text-[10px] font-mono text-muted/70 italic">
-              — {meta.selection_reason}
-            </span>
-          )}
-        </div>
       </div>
     </div>
   );
